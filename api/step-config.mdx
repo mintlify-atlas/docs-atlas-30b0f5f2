@@ -241,9 +241,9 @@ StepConfig extends [RetryConfig](/api/retry-config#retryconfig) to support autom
 ## Complete Example
 
 ```typescript
-import { createPipeline } from 'stepkit'
+import { stepkit } from 'stepkit'
 
-const pipeline = createPipeline({ userId: '123' })
+const pipeline = stepkit<{ userId: string }>()
   .step(
     {
       name: 'fetchUser',

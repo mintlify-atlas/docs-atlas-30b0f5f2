@@ -138,9 +138,9 @@ RetryConfig is included in [StepConfig](/api/step-config) to enable automatic re
 ### Complete Retry Example
 
 ```typescript
-import { createPipeline } from 'stepkit'
+import { stepkit } from 'stepkit'
 
-const pipeline = createPipeline({ url: 'https://api.example.com' })
+const pipeline = stepkit<{ url: string }>()
   .step(
     {
       name: 'fetchWithRetry',
@@ -301,9 +301,9 @@ pipeline.step(
 ### Combining Retries and Circuit Breaker
 
 ```typescript
-import { createPipeline } from 'stepkit'
+import { stepkit } from 'stepkit'
 
-const pipeline = createPipeline({ serviceUrl: 'https://api.example.com' })
+const pipeline = stepkit<{ serviceUrl: string }>()
   .step(
     {
       name: 'resilientServiceCall',
@@ -343,7 +343,7 @@ const result = await pipeline.run()
 ### Circuit Breaker with Monitoring
 
 ```typescript
-const pipeline = createPipeline({ endpoint: '/api/data' })
+const pipeline = stepkit<{ endpoint: string }>()
   .step(
     {
       name: 'monitoredService',

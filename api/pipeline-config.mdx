@@ -28,8 +28,8 @@ type PipelineConfig<
   
   **Boolean usage:**
   ```typescript
-  const pipeline = createPipeline({ id: 1 })
-    .step({}, async (ctx) => ({ result: 'done' }))
+  const pipeline = stepkit<{ id: number }>()
+    .step('process', async (ctx) => ({ result: 'done' }))
   
   // Disable all logging
   await pipeline.run({ log: false })
@@ -325,9 +325,9 @@ type StepCompleteEvent<
 ## Complete Example
 
 ```typescript
-import { createPipeline } from 'stepkit'
+import { stepkit } from 'stepkit'
 
-const pipeline = createPipeline({ userId: '123' })
+const pipeline = stepkit<{ userId: string }>()
   .step(
     { name: 'authenticate' },
     async (ctx) => ({ token: await getToken(ctx.userId) })
