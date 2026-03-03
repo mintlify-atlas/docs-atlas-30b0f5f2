@@ -1,0 +1,104 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "stepkit",
+  "projectDescription": "Super minimal, type-safe pipeline builder for TypeScript—built for the AI SDK, works everywhere.",
+  "theme": "palm",
+  "primaryColor": "#6366f1",
+  "lightColor": "#818cf8",
+  "darkColor": "#4f46e5",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/pipelines",
+              "concepts/steps",
+              "concepts/context-flow",
+              "concepts/type-safety"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/parallel-execution",
+              "features/branching",
+              "features/composition",
+              "features/error-handling",
+              "features/checkpoints",
+              "features/logging"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/ai-workflows",
+              "examples/content-moderation",
+              "examples/data-processing",
+              "examples/human-approval"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core API",
+            "pages": [
+              "api/stepkit",
+              "api/step",
+              "api/branch-on",
+              "api/transform",
+              "api/run"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "api/step-config",
+              "api/pipeline-config",
+              "api/retry-config"
+            ]
+          },
+          {
+            "group": "Type Helpers",
+            "pages": [
+              "api/type-helpers"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Type-safe pipeline builder with automatic type inference",
+    "Parallel step execution with configurable merge strategies",
+    "Conditional branching and composable sub-pipelines",
+    "Error handling with retries, timeouts, and circuit breakers",
+    "Checkpoint/resume functionality for long-running workflows",
+    "Observable logging with performance tracking"
+  ],
+  "publicApiSurface": [
+    "stepkit()",
+    ".step()",
+    ".branchOn()",
+    ".transform()",
+    ".run()",
+    ".runCheckpoint()",
+    "StepNames<T>",
+    "StepInput<T, Name>",
+    "StepOutput<T, Name>",
+    "serializeCheckpoint()",
+    "deserializeCheckpoint()"
+  ]
+}
