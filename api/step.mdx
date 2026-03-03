@@ -1,0 +1,329 @@
+---
+title: .step()
+description: Add execution steps to your pipeline
+---
+
+The `.step()` method adds one or more execution steps to your pipeline. Steps receive the current context, execute functions in parallel or sequence, and merge their outputs into the context.
+
+## Signatures
+
+### Anonymous Step with Functions
+
+```typescript
+step<TItems extends readonly (
+  | StepFunction<TContext, Record<string, unknown> | never>
+  | StepkitBuilder<any, any, any>
+)[]>(
+  ...items: TItems
+): StepkitBuilder<TInput, TContext & UnionToIntersection<ItemsOutputs<TContext, TItems>>, ...>
+```
+
+### Named Step with Functions
+
+```typescript
+step<TName extends string, TItems extends readonly (...)[]>(
+  name: TName,
+  ...items: TItems
+): StepkitBuilder<TInput, TContext & UnionToIntersection<ItemsOutputs<TContext, TItems>>, ...>
+```
+
+### Step with Configuration
+
+```typescript
+step<TItems extends readonly (...)[],
+     TName extends string,
+     TConfig extends Omit<StepConfig<TContext>, 'name'> & { name: TName }>(
+  config: TConfig,
+  ...items: TItems
+): StepkitBuilder<
+  TInput,
+  TContext & MakeSafeOutput<TConfig, UnionToIntersection<ItemsOutputs<TContext, TItems>>>,
+  ...
+>
+```
+
+### Step with Sub-Pipeline
+
+```typescript
+step<TName extends string,
+     TSubIn extends Record<string, unknown>,
+     TSubOut extends Record<string, unknown>,
+     TSubHistory extends readonly { name: string; ctx: unknown }[],
+     TOutputs extends readonly Record<string, unknown>[]>(
+  name: TName,
+  sub: StepkitBuilder<TSubIn, TSubOut, TSubHistory>,
+  ...fns: { [K in keyof TOutputs]: StepFunction<TContext, TOutputs[K]> }
+): StepkitBuilder<
+  TInput,
+  TContext & DiffNewKeys<TSubOut, TContext> & MergeOutputs<TOutputs>,
+  ...
+>
+```
+
+## Parameters
+
+<ParamField path="name" type="string" optional>
+  Optional name for the step. If not provided, a name like `step-1`, `step-2`, etc. will be auto-generated.
+</ParamField>
+
+<ParamField path="config" type="StepConfig<TContext>" optional>
+  Optional configuration object for the step.
+
+  <Expandable title="properties">
+    <ParamField path="name" type="string" optional>
+      Name for the step.
+    </ParamField>
+
+    <ParamField path="condition" type="boolean | ((context: TContext) => boolean | Promise<boolean>)" optional>
+      Condition to determine if the step should execute. Can be a boolean or a function that returns a boolean.
+    </ParamField>
+
+    <ParamField path="onError" type="'throw' | 'continue' | 'skip-remaining'" default="'throw'">
+      Error handling strategy:
+      - `'throw'`: Re-throw the error (stops pipeline)
+      - `'continue'`: Log the error and continue to next step
+      - `'skip-remaining'`: Stop executing remaining steps gracefully
+    </ParamField>
+
+    <ParamField path="log" type="boolean" optional>
+      Override global logging for this step.
+    </ParamField>
+
+    <ParamField path="timeout" type="number" optional>
+      Timeout in milliseconds. Step will fail if it exceeds this duration.
+    </ParamField>
+
+    <ParamField path="parallelMode" type="'all' | 'settled'" default="'all'">
+      How to handle multiple functions:
+      - `'all'`: Wait for all functions (fail if any fails)
+      - `'settled'`: Wait for all, continue even if some fail
+    </ParamField>
+
+    <ParamField path="mergePolicy" type="'override' | 'error' | 'warn' | 'skip'" default="'override'">
+      How to handle key collisions when merging outputs:
+      - `'override'`: Later values override earlier ones
+      - `'error'`: Throw error on collision
+      - `'warn'`: Log warning and override
+      - `'skip'`: Keep first value, skip later ones
+    </ParamField>
+
+    <ParamField path="retries" type="number" optional>
+      Number of retry attempts on failure.
+    </ParamField>
+
+    <ParamField path="retryDelayMs" type="number | ((attempt: number, error: Error) => number)" optional>
+      Delay between retries in milliseconds, or a function to calculate the delay.
+    </ParamField>
+
+    <ParamField path="shouldRetry" type="(error: Error) => boolean" optional>
+      Function to determine if a specific error should trigger a retry.
+    </ParamField>
+
+    <ParamField path="circuitBreaker" type="CircuitBreakerConfig" optional>
+      Circuit breaker configuration.
+      
+      <Expandable title="CircuitBreakerConfig properties">
+        <ParamField path="failureThreshold" type="number" optional>
+          Number of failures before opening the circuit.
+        </ParamField>
+        <ParamField path="cooldownMs" type="number" optional>
+          Cooldown period before attempting to close the circuit.
+        </ParamField>
+        <ParamField path="behaviorOnOpen" type="'throw' | 'skip'" optional>
+          Behavior when circuit is open.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="...items" type="StepFunction<TContext, Record<string, unknown>> | StepkitBuilder">
+  One or more step functions or sub-pipelines to execute. Functions receive the current context and return an object to merge into the context (or void).
+  
+  Type: `(context: TContext) => Record<string, unknown> | Promise<Record<string, unknown>> | void | Promise<void>`
+</ParamField>
+
+## Returns
+
+<ResponseField name="StepkitBuilder" type="StepkitBuilder<TInput, TContext & OutputTypes, ...>">
+  A new builder instance with the updated context type that includes outputs from all step functions.
+</ResponseField>
+
+## Examples
+
+### Basic Step
+
+```typescript
+const pipeline = stepkit()
+  .step(async () => {
+    return { message: 'Hello' }
+  })
+  .step(async ({ message }) => {
+    console.log(message) // 'Hello'
+  })
+```
+
+### Named Step
+
+```typescript
+const pipeline = stepkit<{ userId: string }>()
+  .step('fetch-user', async ({ userId }) => {
+    const user = await db.users.findById(userId)
+    return { user }
+  })
+  .step('send-email', async ({ user }) => {
+    await sendEmail(user.email, 'Welcome!')
+  })
+```
+
+### Parallel Functions
+
+```typescript
+const pipeline = stepkit<{ orderId: string }>()
+  .step('fetch-data',
+    async ({ orderId }) => {
+      const order = await db.orders.findById(orderId)
+      return { order }
+    },
+    async ({ orderId }) => {
+      const customer = await db.customers.findByOrderId(orderId)
+      return { customer }
+    },
+    async ({ orderId }) => {
+      const items = await db.items.findByOrderId(orderId)
+      return { items }
+    }
+  )
+  // All three functions run in parallel
+  .step(async ({ order, customer, items }) => {
+    // All data is available
+  })
+```
+
+### With Configuration
+
+```typescript
+const pipeline = stepkit()
+  .step(
+    {
+      name: 'fetch-api',
+      timeout: 5000,
+      retries: 3,
+      retryDelayMs: (attempt) => attempt * 1000,
+      shouldRetry: (error) => error.message.includes('ECONNREFUSED'),
+      onError: 'continue'
+    },
+    async () => {
+      const data = await fetch('https://api.example.com/data')
+      return { apiData: data }
+    }
+  )
+```
+
+### Conditional Execution
+
+```typescript
+const pipeline = stepkit<{ isPremium: boolean }>()
+  .step(
+    {
+      name: 'premium-features',
+      condition: ({ isPremium }) => isPremium
+    },
+    async () => {
+      return { features: ['advanced', 'priority-support'] }
+    }
+  )
+  .step(async ({ features }) => {
+    // features might be undefined if isPremium is false
+    if (features) {
+      console.log('Premium features:', features)
+    }
+  })
+```
+
+### With Sub-Pipeline
+
+```typescript
+const subPipeline = stepkit<{ userId: string }>()
+  .step(async ({ userId }) => {
+    const profile = await fetchProfile(userId)
+    return { profile }
+  })
+  .step(async ({ profile }) => {
+    const preferences = await fetchPreferences(profile.id)
+    return { preferences }
+  })
+
+const mainPipeline = stepkit<{ userId: string }>()
+  .step('load-user-data', subPipeline)
+  .step(async ({ profile, preferences }) => {
+    // profile and preferences from sub-pipeline are available
+    console.log(profile, preferences)
+  })
+```
+
+### Parallel Mode: Settled
+
+```typescript
+const pipeline = stepkit()
+  .step(
+    { parallelMode: 'settled' },
+    async () => {
+      const data = await fetchDataA() // might fail
+      return { dataA: data }
+    },
+    async () => {
+      const data = await fetchDataB() // might fail
+      return { dataB: data }
+    },
+    async () => {
+      const data = await fetchDataC() // might fail
+      return { dataC: data }
+    }
+  )
+  // Continue even if some functions failed
+  .step(async ({ dataA, dataB, dataC }) => {
+    // Use whatever data is available
+  })
+```
+
+### Merge Policy
+
+```typescript
+const pipeline = stepkit()
+  .step(
+    { mergePolicy: 'error' },
+    async () => ({ userId: '123' }),
+    async () => ({ userId: '456' }) // This will throw an error
+  )
+```
+
+## Type Safety
+
+The `.step()` method is fully type-safe:
+
+- The context parameter in step functions is typed based on previous steps
+- Return types from step functions are merged into the context
+- Conditional steps and error handling make outputs optional in the type system
+- Sub-pipelines correctly merge their output types
+
+```typescript
+const pipeline = stepkit<{ userId: string }>()
+  .step(async ({ userId }) => {
+    // userId: string (from input)
+    return { name: 'John' }
+  })
+  .step(async ({ userId, name }) => {
+    // userId: string, name: string (from previous step)
+    return { age: 30 }
+  })
+  .step(async ({ userId, name, age }) => {
+    // userId: string, name: string, age: number
+  })
+```
+
+## See Also
+
+- [.branchOn()](/api/branch-on) - Conditional branching
+- [.transform()](/api/transform) - Replace the entire context
+- [.run()](/api/run) - Execute the pipeline

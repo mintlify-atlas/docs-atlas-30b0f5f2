@@ -1,0 +1,337 @@
+---
+title: .transform()
+description: Replace the entire pipeline context with new data
+---
+
+The `.transform()` method completely replaces the current context with a new one. Unlike `.step()` which merges outputs into the existing context, `.transform()` discards all previous data and starts fresh with the transformed result.
+
+<Warning>
+  Use `.transform()` carefully as it discards all previous context. This is useful for major data reshaping or cleanup, but downstream steps won't have access to earlier data unless you explicitly include it in the transform output.
+</Warning>
+
+## Signatures
+
+### Anonymous Transform
+
+```typescript
+transform<TNewContext extends Record<string, any>>(
+  fn: (context: TContext) => TNewContext | Promise<TNewContext>
+): StepkitBuilder<TInput, TNewContext, AppendHistory<THistory, string, TContext>>
+```
+
+### Named Transform
+
+```typescript
+transform<TNewContext extends Record<string, any>, TName extends string>(
+  name: TName,
+  fn: (context: TContext) => TNewContext | Promise<TNewContext>
+): StepkitBuilder<TInput, TNewContext, AppendHistory<THistory, TName, TContext>>
+```
+
+### Transform with Configuration
+
+```typescript
+transform<TNewContext extends Record<string, any>, TName extends string>(
+  config: Omit<StepConfig<TContext>, 'name'> & { name: TName },
+  fn: (context: TContext) => TNewContext | Promise<TNewContext>
+): StepkitBuilder<
+  TInput,
+  TransformResultContext<TContext, TNewContext, Omit<StepConfig<TContext>, 'name'> & { name: TName }>,
+  AppendHistory<THistory, TName, TContext>
+>
+```
+
+```typescript
+transform<TNewContext extends Record<string, any>, TConfig extends StepConfig<TContext>>(
+  config: TConfig,
+  fn: (context: TContext) => TNewContext | Promise<TNewContext>
+): StepkitBuilder<
+  TInput,
+  TransformResultContext<TContext, TNewContext, TConfig>,
+  AppendHistory<THistory, string, TContext>
+>
+```
+
+## Parameters
+
+<ParamField path="name" type="string" optional>
+  Optional name for the transform step. If not provided, a name like `transform-1`, `transform-2`, etc. will be auto-generated.
+</ParamField>
+
+<ParamField path="config" type="StepConfig<TContext>" optional>
+  Optional configuration object for the transform. See [.step() configuration](/api/step#parameters) for available options.
+  
+  <Note>
+    When a transform has a `condition`, `onError: 'continue'`, `onError: 'skip-remaining'`, or `timeout`, the resulting context type is `Partial<TContext> & Partial<TNewContext>` because the transform might not execute or might fail, preserving the previous context.
+  </Note>
+</ParamField>
+
+<ParamField path="fn" type="(context: TContext) => TNewContext | Promise<TNewContext>">
+  Transform function that receives the current context and returns the completely new context.
+  
+  <Warning>
+    Unlike step functions, transform functions **must** return a value. Returning `void`, `null`, or `undefined` will throw a `TypeError` because transforms must provide a replacement context.
+  </Warning>
+</ParamField>
+
+## Returns
+
+<ResponseField name="StepkitBuilder" type="StepkitBuilder<TInput, TNewContext, ...>">
+  A new builder instance with the context completely replaced by `TNewContext`.
+</ResponseField>
+
+## Examples
+
+### Basic Transform
+
+```typescript
+const pipeline = stepkit()
+  .step(async () => ({
+    userId: '123',
+    email: 'user@example.com',
+    tempData: 'temporary'
+  }))
+  .transform(async (ctx) => {
+    // Only keep essential data
+    return {
+      id: ctx.userId,
+      contact: ctx.email
+    }
+  })
+  .step(async ({ id, contact }) => {
+    // id and contact are available
+    // userId, email, tempData are gone
+    console.log(id, contact)
+  })
+```
+
+### Named Transform
+
+```typescript
+const pipeline = stepkit<{ rawData: string }>()
+  .step(async ({ rawData }) => {
+    const parsed = JSON.parse(rawData)
+    return { parsed, metadata: 'extra' }
+  })
+  .transform('reshape-data', async ({ parsed }) => {
+    // Completely reshape the data structure
+    return {
+      items: parsed.items.map(item => ({
+        id: item._id,
+        name: item.displayName
+      })),
+      count: parsed.items.length
+    }
+  })
+  .step(async ({ items, count }) => {
+    // Only items and count are available now
+    console.log(`Processing ${count} items`)
+  })
+```
+
+### Selective Preservation
+
+```typescript
+const pipeline = stepkit<{ apiKey: string }>()
+  .step(async ({ apiKey }) => {
+    const user = await fetchUser(apiKey)
+    const settings = await fetchSettings(apiKey)
+    return { user, settings, apiKey }
+  })
+  .transform('cleanup', async ({ user, settings }) => {
+    // Preserve only what's needed, drop apiKey for security
+    return {
+      userId: user.id,
+      userName: user.name,
+      theme: settings.theme
+    }
+  })
+  .step(async ({ userId, userName, theme }) => {
+    // apiKey is no longer in context
+  })
+```
+
+### Data Normalization
+
+```typescript
+type RawData = {
+  user_id: string
+  first_name: string
+  last_name: string
+  email_address: string
+}
+
+type NormalizedData = {
+  id: string
+  fullName: string
+  email: string
+}
+
+const pipeline = stepkit<{ rawData: RawData }>()
+  .transform('normalize', async ({ rawData }) => {
+    return {
+      id: rawData.user_id,
+      fullName: `${rawData.first_name} ${rawData.last_name}`,
+      email: rawData.email_address
+    } satisfies NormalizedData
+  })
+  .step(async ({ id, fullName, email }) => {
+    // Work with clean, normalized data
+  })
+```
+
+### Conditional Transform
+
+```typescript
+const pipeline = stepkit<{ needsTransform: boolean; data: any }>()
+  .transform(
+    {
+      name: 'optional-reshape',
+      condition: ({ needsTransform }) => needsTransform
+    },
+    async ({ data }) => {
+      return {
+        transformed: transformData(data)
+      }
+    }
+  )
+  .step(async (ctx) => {
+    // Type is: Partial<{ needsTransform: boolean; data: any }> & Partial<{ transformed: any }>
+    // Because transform might not have executed
+    
+    if ('transformed' in ctx) {
+      console.log('Using transformed data:', ctx.transformed)
+    } else {
+      console.log('Using original data:', ctx.data)
+    }
+  })
+```
+
+### With Error Handling
+
+```typescript
+const pipeline = stepkit()
+  .step(async () => ({
+    jsonString: '{"invalid': 'json'}'
+  }))
+  .transform(
+    {
+      name: 'parse-json',
+      onError: 'continue'
+    },
+    async ({ jsonString }) => {
+      return JSON.parse(jsonString) // Might throw
+    }
+  )
+  .step(async (ctx) => {
+    // If parsing failed, previous context is preserved
+    if ('jsonString' in ctx) {
+      console.log('Parse failed, using original:', ctx.jsonString)
+    }
+  })
+```
+
+### Aggregation and Summarization
+
+```typescript
+const pipeline = stepkit<{ userId: string }>()
+  .step(async ({ userId }) => {
+    const orders = await fetchOrders(userId)
+    const reviews = await fetchReviews(userId)
+    const wishlist = await fetchWishlist(userId)
+    return { orders, reviews, wishlist }
+  })
+  .transform('create-summary', async ({ orders, reviews, wishlist }) => {
+    return {
+      summary: {
+        totalOrders: orders.length,
+        averageRating: reviews.reduce((a, r) => a + r.rating, 0) / reviews.length,
+        wishlistSize: wishlist.length,
+        lastOrderDate: orders[0]?.date
+      }
+    }
+  })
+  .step(async ({ summary }) => {
+    console.log('User summary:', summary)
+  })
+```
+
+### Chaining Multiple Transforms
+
+```typescript
+const pipeline = stepkit<{ rawInput: string }>()
+  .transform('parse', async ({ rawInput }) => {
+    return { parsed: JSON.parse(rawInput) }
+  })
+  .transform('validate', async ({ parsed }) => {
+    const validated = validateSchema(parsed)
+    return { valid: validated }
+  })
+  .transform('enrich', async ({ valid }) => {
+    const enriched = await enrichData(valid)
+    return { final: enriched }
+  })
+  .step(async ({ final }) => {
+    // Only final data is available
+    console.log(final)
+  })
+```
+
+## Differences from .step()
+
+| Feature | .step() | .transform() |
+|---------|---------|-------------|
+| **Context handling** | Merges outputs into existing context | Replaces entire context |
+| **Previous data** | Always accessible | Lost unless explicitly included |
+| **Return value** | Optional (void treated as `{}`) | Required (must return object) |
+| **Type signature** | `TContext & TOutput` | `TNewContext` |
+| **Use case** | Incremental data building | Data reshaping, cleanup |
+
+## Type Safety
+
+Transforms are fully type-safe:
+
+```typescript
+const pipeline = stepkit<{ a: number }>()
+  .step(async ({ a }) => ({ b: 'hello' }))
+  // Context: { a: number; b: string }
+  
+  .transform(async ({ a, b }) => {
+    // Has access to a and b
+    return { c: a + b.length }
+  })
+  // Context is now: { c: number }
+  // a and b are no longer available
+  
+  .step(async ({ c }) => {
+    console.log(c) // OK
+    // console.log(a) // Error: a doesn't exist
+  })
+```
+
+## Validation
+
+Transforms validate their return values:
+
+```typescript
+// ❌ This will throw TypeError
+pipeline.transform(async () => {
+  return undefined // Error: must return an object
+})
+
+// ❌ This will throw TypeError
+pipeline.transform(async () => {
+  return null // Error: must return an object
+})
+
+// ✅ This is valid
+pipeline.transform(async () => {
+  return {} // OK: empty object is valid
+})
+```
+
+## See Also
+
+- [.step()](/api/step) - Add execution steps that merge into context
+- [.branchOn()](/api/branch-on) - Conditional branching
+- [Context Flow](/concepts/context-flow) - Understanding context flow

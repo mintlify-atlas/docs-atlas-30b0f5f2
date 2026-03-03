@@ -1,0 +1,481 @@
+---
+title: .run() & .runCheckpoint()
+description: Execute pipelines and resume from checkpoints
+---
+
+The `.run()` and `.runCheckpoint()` methods execute your pipeline. `.run()` starts from the beginning with initial input, while `.runCheckpoint()` resumes from a saved checkpoint.
+
+## .run()
+
+Executes the pipeline from start to finish with the provided input context.
+
+### Signature
+
+```typescript
+run(
+  input: TInput,
+  options?: PipelineConfig<TContext, StepNames<StepkitBuilder<TInput, TContext, THistory>>>
+): Promise<TContext>
+```
+
+### Parameters
+
+<ParamField path="input" type="TInput" required>
+  The initial context to start the pipeline with. Must match the type specified when creating the pipeline with `stepkit<TInput>()`.
+</ParamField>
+
+<ParamField path="options" type="PipelineConfig" optional>
+  Optional runtime configuration that overrides the configuration passed to `stepkit()`.
+
+  <Expandable title="properties">
+    <ParamField path="log" type="boolean | LogConfig" optional>
+      Enable/disable logging or provide custom log configuration.
+      
+      <Expandable title="LogConfig properties">
+        <ParamField path="logFn" type="(message: string, ...args: unknown[]) => void" optional>
+          Custom logging function (defaults to `console.log`).
+        </ParamField>
+        <ParamField path="errorLogFn" type="(message: string, ...args: unknown[]) => void" optional>
+          Custom error logging function (defaults to `console.error`).
+        </ParamField>
+        <ParamField path="stopwatch" type="boolean | StopwatchConfig" optional>
+          Enable performance timing.
+          
+          <Expandable title="StopwatchConfig properties">
+            <ParamField path="showStepDuration" type="boolean" default="true">
+              Show duration for each step.
+            </ParamField>
+            <ParamField path="showSummary" type="boolean" default="true">
+              Show performance summary table.
+            </ParamField>
+            <ParamField path="showTotal" type="boolean" default="true">
+              Show total pipeline duration.
+            </ParamField>
+          </Expandable>
+        </ParamField>
+      </Expandable>
+    </ParamField>
+
+    <ParamField path="onStepComplete" type="(event: StepCompleteEvent<TContext, TStepName>) => void | Promise<void>" optional>
+      Callback invoked after each step completes successfully.
+      
+      <Expandable title="StepCompleteEvent properties">
+        <ParamField path="stepName" type="string">
+          Name of the completed step.
+        </ParamField>
+        <ParamField path="duration" type="number">
+          Execution time in milliseconds.
+        </ParamField>
+        <ParamField path="context" type="TContext">
+          Current pipeline context after the step.
+        </ParamField>
+        <ParamField path="checkpoint" type="string">
+          Serialized checkpoint string for resuming from this step.
+        </ParamField>
+        <ParamField path="stopPipeline" type="() => void">
+          Function to stop the pipeline early.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+
+    <ParamField path="onError" type="(stepName: string, error: Error) => void" optional>
+      Callback invoked when a step encounters an error.
+    </ParamField>
+
+    <ParamField path="signal" type="AbortSignal" optional>
+      AbortSignal for canceling the pipeline execution.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Returns
+
+<ResponseField name="Promise<TContext>" type="Promise<TContext>">
+  A promise that resolves with the final context after all steps have completed.
+</ResponseField>
+
+### Examples
+
+#### Basic Execution
+
+```typescript
+const pipeline = stepkit<{ userId: string }>()
+  .step(async ({ userId }) => {
+    const user = await fetchUser(userId)
+    return { user }
+  })
+  .step(async ({ user }) => {
+    return { greeting: `Hello, ${user.name}!` }
+  })
+
+const result = await pipeline.run({ userId: '123' })
+console.log(result.greeting) // 'Hello, John!'
+```
+
+#### With Logging
+
+```typescript
+const result = await pipeline.run(
+  { userId: '123' },
+  {
+    log: {
+      logFn: (msg) => console.log(`[Pipeline] ${msg}`),
+      stopwatch: true
+    }
+  }
+)
+
+// Output:
+// [Pipeline] 🚀 Starting pipeline with input: { userId: '123' }
+// [Pipeline] 📍 Step: step-1
+// [Pipeline] ✅ step-1 completed in 245ms
+// [Pipeline] 📍 Step: step-2
+// [Pipeline] ✅ step-2 completed in 12ms
+// [Pipeline] ⏱️  Performance Summary:
+// [Pipeline] ┌──────────────────────────────────────────────────────┐
+// [Pipeline] │ ✅ step-1                                       245ms │
+// [Pipeline] │ ✅ step-2                                        12ms │
+// [Pipeline] └──────────────────────────────────────────────────────┘
+// [Pipeline] ⏰ Total Pipeline Time: 257ms
+```
+
+#### Saving Checkpoints
+
+```typescript
+const checkpoints: string[] = []
+
+const pipeline = stepkit<{ orderId: string }>()
+  .step('fetch-order', async ({ orderId }) => {
+    const order = await db.orders.findById(orderId)
+    return { order }
+  })
+  .step('process-payment', async ({ order }) => {
+    const payment = await processPayment(order)
+    return { payment }
+  })
+  .step('send-confirmation', async ({ order, payment }) => {
+    await sendEmail(order.email, payment)
+  })
+
+const result = await pipeline.run(
+  { orderId: 'order-123' },
+  {
+    onStepComplete: async ({ stepName, checkpoint }) => {
+      console.log(`Completed: ${stepName}`)
+      checkpoints.push(checkpoint)
+      await db.checkpoints.save(checkpoint)
+    }
+  }
+)
+```
+
+#### Early Stopping
+
+```typescript
+const pipeline = stepkit<{ items: string[] }>()
+  .step('validate', async ({ items }) => {
+    const valid = items.length > 0
+    return { valid }
+  })
+  .step('process', async ({ items, valid }) => {
+    const processed = items.map(processItem)
+    return { processed }
+  })
+  .step('finalize', async ({ processed }) => {
+    return { result: 'done' }
+  })
+
+const result = await pipeline.run(
+  { items: [] },
+  {
+    onStepComplete: ({ stepName, context, stopPipeline }) => {
+      if (stepName === 'validate' && !context.valid) {
+        console.log('Validation failed, stopping pipeline')
+        stopPipeline()
+      }
+    }
+  }
+)
+// Only 'validate' step executes, then pipeline stops
+```
+
+#### With AbortSignal
+
+```typescript
+const controller = new AbortController()
+
+const pipeline = stepkit()
+  .step(async () => {
+    await longRunningOperation()
+  })
+
+setTimeout(() => controller.abort(), 5000)
+
+try {
+  await pipeline.run({}, { signal: controller.signal })
+} catch (error) {
+  console.log('Pipeline aborted')
+}
+```
+
+---
+
+## .runCheckpoint()
+
+Resumes pipeline execution from a saved checkpoint, skipping all steps up to and including the checkpoint step.
+
+### Signatures
+
+```typescript
+runCheckpoint(
+  checkpoint: string,
+  options?: PipelineConfig<TContext, StepNames<StepkitBuilder<TInput, TContext, THistory>>>
+): Promise<TContext>
+
+runCheckpoint(
+  params: { checkpoint: string; overrideData?: Partial<TContext> },
+  options?: PipelineConfig<TContext, StepNames<StepkitBuilder<TInput, TContext, THistory>>>
+): Promise<TContext>
+```
+
+### Parameters
+
+<ParamField path="checkpoint" type="string" required>
+  The serialized checkpoint string obtained from `onStepComplete` or by calling `serializeCheckpoint()`.
+</ParamField>
+
+<ParamField path="params" type="object" optional>
+  Alternative parameter format with additional options.
+  
+  <Expandable title="properties">
+    <ParamField path="checkpoint" type="string" required>
+      The serialized checkpoint string.
+    </ParamField>
+    
+    <ParamField path="overrideData" type="Partial<TContext>" optional>
+      Additional data to merge into the checkpoint context before resuming. Useful for updating specific fields without modifying the checkpoint.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="options" type="PipelineConfig" optional>
+  Optional runtime configuration (same as `.run()`).
+</ParamField>
+
+### Returns
+
+<ResponseField name="Promise<TContext>" type="Promise<TContext>">
+  A promise that resolves with the final context after all remaining steps have completed.
+</ResponseField>
+
+### Examples
+
+#### Basic Checkpoint Resume
+
+```typescript
+let savedCheckpoint: string
+
+const pipeline = stepkit<{ orderId: string }>()
+  .step('fetch-order', async ({ orderId }) => {
+    const order = await db.orders.findById(orderId)
+    return { order }
+  })
+  .step('process-payment', async ({ order }) => {
+    const payment = await processPayment(order)
+    return { payment }
+  })
+  .step('send-confirmation', async ({ order, payment }) => {
+    await sendEmail(order.email, payment)
+  })
+
+// First run - save checkpoint after payment
+try {
+  await pipeline.run(
+    { orderId: 'order-123' },
+    {
+      onStepComplete: ({ stepName, checkpoint }) => {
+        if (stepName === 'process-payment') {
+          savedCheckpoint = checkpoint
+        }
+      }
+    }
+  )
+} catch (error) {
+  console.log('Pipeline failed, checkpoint saved')
+}
+
+// Later - resume from checkpoint
+const result = await pipeline.runCheckpoint(savedCheckpoint)
+// Skips 'fetch-order' and 'process-payment', only runs 'send-confirmation'
+```
+
+#### With Override Data
+
+```typescript
+const pipeline = stepkit<{ userId: string }>()
+  .step('fetch-user', async ({ userId }) => {
+    const user = await db.users.findById(userId)
+    return { user }
+  })
+  .step('update-profile', async ({ user, newEmail }) => {
+    user.email = newEmail
+    await db.users.update(user)
+  })
+
+// Save checkpoint after fetching user
+let checkpoint: string
+await pipeline.run(
+  { userId: '123' },
+  {
+    onStepComplete: ({ stepName, checkpoint: cp }) => {
+      if (stepName === 'fetch-user') {
+        checkpoint = cp
+      }
+    }
+  }
+)
+
+// Resume with updated email
+await pipeline.runCheckpoint({
+  checkpoint,
+  overrideData: { newEmail: 'newemail@example.com' }
+})
+```
+
+#### Checkpoint Management
+
+```typescript
+import { serializeCheckpoint, deserializeCheckpoint } from 'stepkit'
+
+// Manual checkpoint creation
+const checkpoint = serializeCheckpoint({
+  stepName: 'process-payment',
+  output: {
+    orderId: 'order-123',
+    order: { /* ... */ },
+    payment: { /* ... */ }
+  }
+})
+
+// Save to database
+await db.checkpoints.insert({
+  id: 'cp-1',
+  pipeline: 'order-processing',
+  checkpoint,
+  createdAt: new Date()
+})
+
+// Later - retrieve and resume
+const saved = await db.checkpoints.findById('cp-1')
+const result = await pipeline.runCheckpoint(saved.checkpoint)
+
+// Inspect checkpoint data
+const data = deserializeCheckpoint(saved.checkpoint)
+console.log('Resuming from:', data.stepName)
+console.log('Context:', data.output)
+```
+
+#### Retry Failed Steps
+
+```typescript
+const pipeline = stepkit<{ taskId: string }>()
+  .step('fetch-task', async ({ taskId }) => {
+    const task = await db.tasks.findById(taskId)
+    return { task }
+  })
+  .step('process-task', async ({ task }) => {
+    // Might fail
+    const result = await externalAPI.process(task)
+    return { result }
+  })
+  .step('save-result', async ({ result }) => {
+    await db.results.insert(result)
+  })
+
+let lastCheckpoint: string
+
+try {
+  await pipeline.run(
+    { taskId: 'task-1' },
+    {
+      onStepComplete: ({ checkpoint }) => {
+        lastCheckpoint = checkpoint
+      }
+    }
+  )
+} catch (error) {
+  console.log('Pipeline failed, retrying from last checkpoint')
+  
+  // Retry from last successful step
+  await pipeline.runCheckpoint(lastCheckpoint)
+}
+```
+
+## Checkpoint Format
+
+Checkpoints are JSON-serialized objects with this structure:
+
+```typescript
+type Checkpoint<T extends Record<string, unknown>> = {
+  stepName: string
+  output: T
+}
+```
+
+Example:
+```json
+{
+  "stepName": "fetch-user",
+  "output": {
+    "userId": "123",
+    "user": {
+      "id": "123",
+      "name": "John Doe",
+      "email": "john@example.com"
+    }
+  }
+}
+```
+
+## Performance Logging
+
+When stopwatch is enabled, pipelines log detailed performance information:
+
+```
+🚀 Starting pipeline with input: { userId: '123' }
+
+📍 Step: fetch-user
+✅ fetch-user completed in 245ms
+   Output: user
+
+📍 Step: process-data
+✅ process-data completed in 1.2s
+   Output: processed
+
+📍 Step: save-results
+✅ save-results completed in 89ms
+
+⏱️  Performance Summary:
+↪️ Resumed from checkpoint: fetch-user
+┌──────────────────────────────────────────────────────┐
+│ ✅ fetch-user                                   245ms │
+│ ✅ process-data                                  1.2s │
+│ ✅ save-results                                  89ms │
+└──────────────────────────────────────────────────────┘
+
+📊 Statistics:
+   Average: 544ms
+   Slowest: process-data (1.2s)
+   Fastest: save-results (89ms)
+
+⏰ Total Pipeline Time: 1.5s
+
+✨ Pipeline completed successfully
+```
+
+## See Also
+
+- [stepkit()](/api/stepkit) - Create a new pipeline
+- [.step()](/api/step) - Add execution steps
+- [Checkpoints & Resume](/features/checkpoints) - Checkpoint management guide
+- [Error Handling](/features/error-handling) - Handling failures and retries

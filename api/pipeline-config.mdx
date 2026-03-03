@@ -1,0 +1,376 @@
+---
+title: 'PipelineConfig'
+description: 'Pipeline-level runtime configuration options'
+---
+
+## Overview
+
+The `PipelineConfig` type defines runtime configuration options that apply to an entire pipeline execution. These options control logging behavior, lifecycle hooks, error handling, and cancellation.
+
+## Type Definition
+
+```typescript
+type PipelineConfig<
+  TCtx extends Record<string, unknown> = Record<string, unknown>,
+  TStepName extends string = string
+> = {
+  log?: boolean | LogConfig
+  onStepComplete?: (event: StepCompleteEvent<TCtx, TStepName>) => void | Promise<void>
+  onError?: (stepName: string, error: Error) => void
+  signal?: AbortSignal
+}
+```
+
+## Configuration Fields
+
+<ParamField path="log" type="boolean | LogConfig" optional default="true">
+  Controls pipeline logging behavior. Can be a simple boolean to enable/disable all logging, or a LogConfig object for fine-grained control.
+  
+  **Boolean usage:**
+  ```typescript
+  const pipeline = createPipeline({ id: 1 })
+    .step({}, async (ctx) => ({ result: 'done' }))
+  
+  // Disable all logging
+  await pipeline.run({ log: false })
+  
+  // Enable all logging
+  await pipeline.run({ log: true })
+  ```
+  
+  **LogConfig usage:**
+  ```typescript
+  await pipeline.run({
+    log: {
+      logFn: (msg, ...args) => console.log(`[INFO] ${msg}`, ...args),
+      errorLogFn: (msg, ...args) => console.error(`[ERROR] ${msg}`, ...args),
+      stopwatch: {
+        showStepDuration: true,
+        showSummary: true,
+        showTotal: true
+      }
+    }
+  })
+  ```
+  
+  See [LogConfig](#logconfig) for detailed configuration options.
+</ParamField>
+
+<ParamField path="onStepComplete" type="(event: StepCompleteEvent<TCtx, TStepName>) => void | Promise<void>" optional>
+  Callback invoked after each step completes successfully. Receives detailed information about the completed step including context, duration, and a checkpoint identifier.
+  
+  The callback can be async and provides a `stopPipeline()` function to halt execution if needed.
+  
+  ```typescript
+  await pipeline.run({
+    onStepComplete: async (event) => {
+      console.log(`Step ${event.stepName} completed in ${event.duration}ms`)
+      
+      // Save checkpoint
+      await saveCheckpoint(event.checkpoint, event.context)
+      
+      // Optionally stop pipeline based on context
+      if (event.context.shouldStop) {
+        event.stopPipeline()
+      }
+    }
+  })
+  ```
+  
+  See [StepCompleteEvent](#stepcompleteevent) for event structure.
+</ParamField>
+
+<ParamField path="onError" type="(stepName: string, error: Error) => void" optional>
+  Callback invoked when a step throws an error. Useful for centralized error logging, monitoring, or alerting.
+  
+  This callback is invoked regardless of the step's `onError` configuration.
+  
+  ```typescript
+  await pipeline.run({
+    onError: (stepName, error) => {
+      console.error(`Error in step ${stepName}:`, error)
+      
+      // Send to error tracking service
+      errorTracker.captureException(error, {
+        tags: { step: stepName }
+      })
+    }
+  })
+  ```
+</ParamField>
+
+<ParamField path="signal" type="AbortSignal" optional>
+  AbortSignal for canceling pipeline execution. When the signal is aborted, the pipeline will stop executing and throw an AbortError.
+  
+  Useful for implementing timeouts, user cancellations, or coordinating multiple pipelines.
+  
+  ```typescript
+  // Manual cancellation
+  const controller = new AbortController()
+  
+  const pipelinePromise = pipeline.run({
+    signal: controller.signal
+  })
+  
+  // Cancel after 10 seconds
+  setTimeout(() => controller.abort(), 10000)
+  
+  try {
+    await pipelinePromise
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      console.log('Pipeline was cancelled')
+    }
+  }
+  ```
+  
+  ```typescript
+  // Timeout using AbortSignal.timeout
+  await pipeline.run({
+    signal: AbortSignal.timeout(5000) // Cancel after 5 seconds
+  })
+  ```
+</ParamField>
+
+## LogConfig
+
+### Type Definition
+
+```typescript
+type LogConfig = {
+  logFn?: (message: string, ...args: unknown[]) => void
+  errorLogFn?: (message: string, ...args: unknown[]) => void
+  stopwatch?: boolean | StopwatchConfig
+}
+```
+
+### Fields
+
+<ParamField path="logFn" type="(message: string, ...args: unknown[]) => void" optional default="console.log">
+  Custom function for logging informational messages. Defaults to `console.log`.
+  
+  ```typescript
+  await pipeline.run({
+    log: {
+      logFn: (msg, ...args) => {
+        logger.info(msg, { args, service: 'pipeline' })
+      }
+    }
+  })
+  ```
+</ParamField>
+
+<ParamField path="errorLogFn" type="(message: string, ...args: unknown[]) => void" optional default="console.error">
+  Custom function for logging error messages. Defaults to `console.error`.
+  
+  ```typescript
+  await pipeline.run({
+    log: {
+      errorLogFn: (msg, ...args) => {
+        logger.error(msg, { args, service: 'pipeline' })
+      }
+    }
+  })
+  ```
+</ParamField>
+
+<ParamField path="stopwatch" type="boolean | StopwatchConfig" optional default="false">
+  Controls timing/performance measurement. Can be a boolean to enable/disable all timing, or a StopwatchConfig object for fine-grained control.
+  
+  **Boolean usage:**
+  ```typescript
+  await pipeline.run({
+    log: {
+      stopwatch: true // Enable all timing features
+    }
+  })
+  ```
+  
+  **StopwatchConfig usage:**
+  ```typescript
+  await pipeline.run({
+    log: {
+      stopwatch: {
+        showStepDuration: true,
+        showSummary: false,
+        showTotal: true
+      }
+    }
+  })
+  ```
+  
+  See [StopwatchConfig](#stopwatchconfig) for detailed options.
+</ParamField>
+
+## StopwatchConfig
+
+### Type Definition
+
+```typescript
+type StopwatchConfig = {
+  showStepDuration?: boolean
+  showSummary?: boolean
+  showTotal?: boolean
+}
+```
+
+### Fields
+
+<ParamField path="showStepDuration" type="boolean" optional default="true">
+  Whether to log the duration of each individual step as it completes.
+  
+  ```typescript
+  // Output: Step "fetchUser" completed in 245ms
+  await pipeline.run({
+    log: {
+      stopwatch: { showStepDuration: true }
+    }
+  })
+  ```
+</ParamField>
+
+<ParamField path="showSummary" type="boolean" optional default="true">
+  Whether to log a summary table of all step timings after pipeline completion.
+  
+  The summary includes each step's name, duration, and status (success/failed/skipped).
+  
+  ```typescript
+  await pipeline.run({
+    log: {
+      stopwatch: { showSummary: true }
+    }
+  })
+  ```
+</ParamField>
+
+<ParamField path="showTotal" type="boolean" optional default="true">
+  Whether to log the total pipeline execution time after completion.
+  
+  ```typescript
+  // Output: Total pipeline execution: 1.2s
+  await pipeline.run({
+    log: {
+      stopwatch: { showTotal: true }
+    }
+  })
+  ```
+</ParamField>
+
+## StepCompleteEvent
+
+### Type Definition
+
+```typescript
+type StepCompleteEvent<
+  TCtx extends Record<string, unknown>,
+  TStepName extends string = string
+> = {
+  stepName: TStepName
+  duration: number
+  context: TCtx
+  checkpoint: string
+  stopPipeline: () => void
+}
+```
+
+### Fields
+
+<ParamField path="stepName" type="string">
+  Name of the completed step. Either the custom name from StepConfig or an auto-generated name.
+</ParamField>
+
+<ParamField path="duration" type="number">
+  Step execution duration in milliseconds.
+</ParamField>
+
+<ParamField path="context" type="TCtx">
+  Current pipeline context after the step completed, including all outputs from this and previous steps.
+</ParamField>
+
+<ParamField path="checkpoint" type="string">
+  Unique checkpoint identifier for this point in the pipeline. Can be used with `resumeFrom()` to restart execution from this step.
+  
+  ```typescript
+  await pipeline.run({
+    onStepComplete: async (event) => {
+      await saveCheckpoint({
+        id: event.checkpoint,
+        context: event.context,
+        timestamp: Date.now()
+      })
+    }
+  })
+  
+  // Later, resume from checkpoint
+  const checkpoint = await loadCheckpoint()
+  await pipeline.resumeFrom(checkpoint.id, checkpoint.context)
+  ```
+</ParamField>
+
+<ParamField path="stopPipeline" type="() => void">
+  Function to halt pipeline execution after this step. Remaining steps will not execute.
+  
+  ```typescript
+  await pipeline.run({
+    onStepComplete: (event) => {
+      if (event.context.criticalError) {
+        console.log('Critical error detected, stopping pipeline')
+        event.stopPipeline()
+      }
+    }
+  })
+  ```
+</ParamField>
+
+## Complete Example
+
+```typescript
+import { createPipeline } from 'stepkit'
+
+const pipeline = createPipeline({ userId: '123' })
+  .step(
+    { name: 'authenticate' },
+    async (ctx) => ({ token: await getToken(ctx.userId) })
+  )
+  .step(
+    { name: 'fetchData' },
+    async (ctx) => ({ data: await fetchData(ctx.token) })
+  )
+  .step(
+    { name: 'processData' },
+    async (ctx) => ({ result: await process(ctx.data) })
+  )
+
+const controller = new AbortController()
+
+const result = await pipeline.run({
+  log: {
+    logFn: (msg, ...args) => logger.info(msg, ...args),
+    errorLogFn: (msg, ...args) => logger.error(msg, ...args),
+    stopwatch: {
+      showStepDuration: true,
+      showSummary: true,
+      showTotal: true
+    }
+  },
+  onStepComplete: async (event) => {
+    console.log(`Completed: ${event.stepName} (${event.duration}ms)`)
+    await saveProgress(event.checkpoint, event.context)
+    
+    // Stop if needed
+    if (event.context.shouldAbort) {
+      event.stopPipeline()
+    }
+  },
+  onError: (stepName, error) => {
+    console.error(`Error in ${stepName}:`, error)
+    errorTracker.capture(error, { step: stepName })
+  },
+  signal: controller.signal
+})
+```
+
+## Related Types
+
+- [StepConfig](/api/step-config) - Individual step configuration
+- [RetryConfig](/api/retry-config) - Retry and circuit breaker configuration

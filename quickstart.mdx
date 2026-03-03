@@ -1,80 +1,273 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get started with stepkit in under 2 minutes
 ---
 
-## Get started in three steps
+## Installation
 
-Get your documentation site running locally and make your first customization.
+Install stepkit using your preferred package manager:
 
-### Step 1: Set up your local environment
+<CodeGroup>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+```bash npm
+npm install stepkit
+```
 
-### Step 2: Deploy your changes
+```bash yarn
+yarn add stepkit
+```
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+```bash pnpm
+pnpm add stepkit
+```
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+```bash bun
+bun add stepkit
+```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+</CodeGroup>
 
-### Step 3: Go live
+## Your First Pipeline
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+Let's build a simple pipeline that fetches user data and processes it. Create a new file and add the following code:
 
-## Next steps
+```typescript
+import { stepkit } from 'stepkit'
 
-Now that you have your docs running, explore these key features:
+const pipeline = stepkit<{ userId: string }>()
+  .step('fetch-user', ({ userId }) => {
+    return { userName: 'John Doe', email: 'john@example.com' }
+  })
+  .step('fetch-settings', ({ userName }) => {
+    return { theme: 'dark', language: 'en' }
+  })
 
-<CardGroup cols={2}>
+const result = await pipeline.run({ userId: '123' })
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+console.log(result)
+// Output: { userId: '123', userName: 'John Doe', email: 'john@example.com', theme: 'dark', language: 'en' }
+```
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+<Steps>
+  <Step title="Import stepkit">
+    Start by importing the `stepkit` function from the package.
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
+    ```typescript
+    import { stepkit } from 'stepkit'
+    ```
+  </Step>
 
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
+  <Step title="Define your input type">
+    Create a pipeline with a typed input. The input type flows through all steps.
 
-</CardGroup>
+    ```typescript
+    const pipeline = stepkit<{ userId: string }>()
+    ```
+  </Step>
+
+  <Step title="Add steps">
+    Each step receives the current context and returns an object. The returned object is merged into the context for subsequent steps.
+
+    ```typescript
+    .step('fetch-user', ({ userId }) => {
+      return { userName: 'John Doe', email: 'john@example.com' }
+    })
+    .step('fetch-settings', ({ userName }) => {
+      return { theme: 'dark', language: 'en' }
+    })
+    ```
+
+    <Tip>
+    Notice how the second step can access `userName` from the first step's output. TypeScript automatically infers all available fields.
+    </Tip>
+  </Step>
+
+  <Step title="Run the pipeline">
+    Execute the pipeline with your initial input:
+
+    ```typescript
+    const result = await pipeline.run({ userId: '123' })
+    ```
+  </Step>
+</Steps>
+
+## Understanding Context Flow
+
+stepkit uses a **context merging** pattern. Each step:
+
+1. Receives the current context (input + all previous step outputs)
+2. Returns a plain object with new fields
+3. The output is merged into the context for the next step
+
+This creates a cumulative context that grows as the pipeline executes:
+
+```typescript
+const pipeline = stepkit<{ value: number }>()
+  .step('double', ({ value }) => ({ doubled: value * 2 }))
+  // Context is now: { value, doubled }
+  .step('add-ten', ({ doubled }) => ({ result: doubled + 10 }))
+  // Context is now: { value, doubled, result }
+
+await pipeline.run({ value: 5 })
+// Final result: { value: 5, doubled: 10, result: 20 }
+```
+
+## Working with Async Operations
+
+Step functions can be async. This is common when fetching data from APIs, databases, or other external sources:
+
+```typescript
+import { stepkit } from 'stepkit'
+
+const pipeline = stepkit<{ userId: string }>()
+  .step('fetch-user', async ({ userId }) => {
+    const response = await fetch(`https://api.example.com/users/${userId}`)
+    const user = await response.json()
+    return { userName: user.name, email: user.email }
+  })
+  .step('fetch-orders', async ({ userId }) => {
+    const response = await fetch(`https://api.example.com/orders?user=${userId}`)
+    const orders = await response.json()
+    return { orderCount: orders.length }
+  })
+
+await pipeline.run({ userId: '123' })
+```
+
+## Parallel Execution
+
+Run multiple async operations concurrently by passing multiple functions to a single step:
+
+```typescript
+import { stepkit } from 'stepkit'
+
+const pipeline = stepkit<{ userId: string }>()
+  .step(
+    'fetch-data',
+    async ({ userId }) => {
+      const user = await fetchUser(userId)
+      return { user }
+    },
+    async ({ userId }) => {
+      const orders = await fetchOrders(userId)
+      return { orders }
+    },
+    async ({ userId }) => {
+      const settings = await fetchSettings(userId)
+      return { settings }
+    }
+  )
+  // All three functions run in parallel
+  .step('process', ({ user, orders, settings }) => {
+    return { summary: `${user.name} has ${orders.length} orders` }
+  })
+
+await pipeline.run({ userId: '123' })
+```
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+Parallel functions in the same step execute concurrently using `Promise.all()`. Their results are merged into the context before the next step runs.
 </Note>
+
+## Enable Logging
+
+See what's happening inside your pipeline with built-in structured logging:
+
+```typescript
+const pipeline = stepkit<{ userId: string }>()
+  .step('fetch-user', async ({ userId }) => {
+    // Simulate delay
+    await new Promise(resolve => setTimeout(resolve, 100))
+    return { userName: 'John' }
+  })
+  .step('process', ({ userName }) => {
+    return { greeting: `Hello, ${userName}!` }
+  })
+
+await pipeline.run(
+  { userId: '123' },
+  { log: { stopwatch: true } }
+)
+```
+
+Output:
+
+```text
+🚀 Starting pipeline with input: { userId: "123" }
+
+📍 Step: fetch-user
+✅ fetch-user completed in 102ms
+   Output: userName
+
+📍 Step: process
+✅ process completed in 0ms
+   Output: greeting
+
+⏱️  Performance Summary:
+┌──────────────────────────────────────────────────────┐
+│ ✅ fetch-user                                  102ms │
+│ ✅ process                                       0ms │
+└──────────────────────────────────────────────────────┘
+
+📊 Statistics:
+   Average: 51ms
+   Slowest: fetch-user (102ms)
+   Fastest: process (0ms)
+
+⏰ Total Pipeline Time: 103ms
+
+✨ Pipeline completed successfully
+```
+
+## Error Handling
+
+Control how errors propagate through your pipeline:
+
+```typescript
+import { stepkit } from 'stepkit'
+
+const pipeline = stepkit<{ userId: string }>()
+  .step(
+    {
+      name: 'fetch-optional-data',
+      onError: 'continue' // Don't throw, continue to next step
+    },
+    async ({ userId }) => {
+      const data = await fetchExternalAPI(userId) // Might fail
+      return { externalData: data }
+    }
+  )
+  .step('process', ({ userId, externalData }) => {
+    // externalData might be undefined if the previous step failed
+    return {
+      message: externalData
+        ? `Got data for ${userId}`
+        : `No external data for ${userId}`
+    }
+  })
+
+await pipeline.run({ userId: '123' })
+```
+
+<Tip>
+When using `onError: 'continue'`, TypeScript automatically marks the step's outputs as optional in subsequent steps.
+</Tip>
+
+## What's Next?
+
+You've learned the basics of stepkit. Here's what to explore next:
+
+<CardGroup cols={2}>
+  <Card title="Core Concepts" icon="book" href="/concepts/pipelines">
+    Deep dive into context merging, type safety, and step configuration
+  </Card>
+  <Card title="Examples" icon="code" href="/examples/ai-workflows">
+    See real-world patterns including branching, transforms, and checkpoints
+  </Card>
+  <Card title="API Reference" icon="brackets-curly" href="/api/stepkit">
+    Complete reference for all methods and configuration options
+  </Card>
+  <Card title="Type Helpers" icon="function" href="/api/type-helpers">
+    Learn how to extract types from your pipelines
+  </Card>
+</CardGroup>

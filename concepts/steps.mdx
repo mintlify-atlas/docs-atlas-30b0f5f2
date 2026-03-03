@@ -1,0 +1,401 @@
+---
+title: 'Steps'
+description: 'Understanding steps and step functions in stepkit'
+---
+
+## What are Steps?
+
+Steps are the building blocks of a pipeline. Each step is a function that receives the current context and returns new data to merge into the context.
+
+## Step Functions
+
+A step function has this signature:
+
+```typescript
+type StepFunction<TContext, TOutput> = (
+  context: TContext
+) => TOutput | Promise<TOutput> | void | Promise<void>
+```
+
+### Basic Step
+
+```typescript
+const pipeline = stepkit<{ userId: string }>()
+  .step('fetch-user', ({ userId }) => {
+    // Return new data to add to context
+    return { userName: 'John Doe', email: 'john@example.com' }
+  })
+  .step('fetch-settings', ({ userName }) => {
+    // Previous step's output is available
+    return { theme: 'dark' }
+  })
+```
+
+### Void Returns
+
+Steps can return `void` if they only perform side effects:
+
+```typescript
+const pipeline = stepkit<{ userId: string }>()
+  .step('log-user', ({ userId }) => {
+    console.log('Processing user:', userId)
+    // No return value - treated as {}
+  })
+  .step('fetch-data', ({ userId }) => {
+    return { data: 'some data' }
+  })
+```
+
+## Naming Steps
+
+Steps can be named or anonymous:
+
+```typescript
+// Named step
+.step('fetch-user', ({ userId }) => ({ userName: 'John' }))
+
+// Anonymous step (auto-generated name like "step-1")
+.step(({ userId }) => ({ userName: 'John' }))
+```
+
+<Warning>
+  Use named steps for better debugging and logging. Anonymous steps make it harder to track pipeline execution.
+</Warning>
+
+## Step Configuration
+
+Steps can be configured with additional options:
+
+```typescript
+const pipeline = stepkit<{ shouldRun: boolean }>()
+  .step(
+    {
+      name: 'risky-operation',
+      condition: ({ shouldRun }) => shouldRun,
+      timeout: 5000,
+      onError: 'continue',
+      retries: 3,
+      retryDelayMs: 1000,
+      log: true,
+      mergePolicy: 'override'
+    },
+    ({ data }) => {
+      return { result: 'processed' }
+    }
+  )
+```
+
+### Configuration Options
+
+<ParamField name="name" type="string">
+  The step name for logging and debugging.
+</ParamField>
+
+<ParamField name="condition" type="boolean | ((context: TCtx) => boolean | Promise<boolean>)">
+  Whether to execute this step. Can be a boolean or a function that evaluates the context.
+  
+  ```typescript
+  .step(
+    {
+      name: 'premium-only',
+      condition: ({ isPremium }) => isPremium
+    },
+    () => ({ premiumFeatures: ['a', 'b'] })
+  )
+  ```
+</ParamField>
+
+<ParamField name="onError" type="'throw' | 'continue' | 'skip-remaining'">
+  How to handle errors:
+  - `throw` (default): Throw the error and stop pipeline
+  - `continue`: Log error but continue to next step
+  - `skip-remaining`: Stop executing remaining steps but don't throw
+  
+  ```typescript
+  .step(
+    { name: 'optional-step', onError: 'continue' },
+    () => {
+      throw new Error('This error is caught')
+    }
+  )
+  .step('next-step', () => ({ still: 'runs' }))
+  ```
+</ParamField>
+
+<ParamField name="timeout" type="number">
+  Timeout in milliseconds. If the step doesn't complete in time, it will be cancelled.
+  
+  ```typescript
+  .step(
+    { name: 'slow-operation', timeout: 5000 },
+    async () => {
+      await slowApiCall()
+      return { result: 'data' }
+    }
+  )
+  ```
+</ParamField>
+
+<ParamField name="retries" type="number">
+  Number of retry attempts on failure.
+  
+  ```typescript
+  .step(
+    {
+      name: 'fetch-api',
+      retries: 3,
+      retryDelayMs: 1000,
+      shouldRetry: (error) => error.message.includes('timeout')
+    },
+    async () => {
+      const data = await fetch('/api/data')
+      return { data }
+    }
+  )
+  ```
+</ParamField>
+
+<ParamField name="retryDelayMs" type="number | ((attempt: number, error: Error) => number)">
+  Delay between retries. Can be a fixed number or a function for exponential backoff.
+  
+  ```typescript
+  retryDelayMs: (attempt, error) => Math.pow(2, attempt) * 1000
+  ```
+</ParamField>
+
+<ParamField name="shouldRetry" type="(error: Error) => boolean">
+  Predicate to determine if an error should trigger a retry.
+</ParamField>
+
+<ParamField name="log" type="boolean">
+  Override global logging for this specific step.
+</ParamField>
+
+<ParamField name="mergePolicy" type="'override' | 'error' | 'warn' | 'skip'">
+  How to handle key collisions when merging step output:
+  - `override` (default): Overwrite existing keys
+  - `error`: Throw error on collision
+  - `warn`: Log warning and overwrite
+  - `skip`: Keep existing value, skip new value
+</ParamField>
+
+<ParamField name="parallelMode" type="'all' | 'settled'">
+  When running multiple functions in parallel (see below), determines behavior:
+  - `all` (default): All must succeed
+  - `settled`: Continue even if some fail
+</ParamField>
+
+<ParamField name="circuitBreaker" type="CircuitBreakerConfig">
+  Circuit breaker configuration:
+  
+  ```typescript
+  circuitBreaker: {
+    failureThreshold: 5,
+    cooldownMs: 60000,
+    behaviorOnOpen: 'throw'
+  }
+  ```
+</ParamField>
+
+## Parallel Steps
+
+You can run multiple functions in parallel within a single step:
+
+```typescript
+const pipeline = stepkit<{ userId: string }>()
+  .step(
+    'fetch-all-data',
+    ({ userId }) => ({ userName: 'John' }),
+    ({ userId }) => ({ email: 'john@example.com' }),
+    ({ userId }) => ({ avatar: 'url' })
+  )
+```
+
+All three functions run in parallel, and their outputs are merged:
+
+```typescript
+// Result: { userId: '123', userName: 'John', email: 'john@example.com', avatar: 'url' }
+```
+
+### Parallel Mode
+
+```typescript
+// All must succeed (default)
+.step(
+  { name: 'critical-data', parallelMode: 'all' },
+  fetchUser,
+  fetchSettings,
+  fetchPermissions
+)
+
+// Continue even if some fail
+.step(
+  { name: 'optional-data', parallelMode: 'settled' },
+  fetchOptionalData1,
+  fetchOptionalData2,
+  fetchOptionalData3
+)
+```
+
+## Conditional Steps
+
+Steps can be executed conditionally:
+
+```typescript
+const pipeline = stepkit<{ isPremium: boolean }>()
+  .step('init', () => ({ base: 'data' }))
+  .step(
+    {
+      name: 'premium-step',
+      condition: ({ isPremium }) => isPremium
+    },
+    () => ({ premiumFeatures: ['a', 'b'] })
+  )
+  .step('final', ({ premiumFeatures }) => {
+    // premiumFeatures is optional since the step might be skipped
+    return { hasPremium: !!premiumFeatures }
+  })
+```
+
+### Async Conditions
+
+Conditions can be async:
+
+```typescript
+.step(
+  {
+    name: 'admin-only',
+    condition: async ({ userId }) => {
+      const user = await fetchUser(userId)
+      return user.role === 'admin'
+    }
+  },
+  () => ({ adminPanel: true })
+)
+```
+
+## Transform Steps
+
+Unlike regular steps that **merge** output into context, transform steps **replace** the entire context:
+
+```typescript
+const pipeline = stepkit<{ rawData: string }>()
+  .step('parse', ({ rawData }) => {
+    const parsed = JSON.parse(rawData)
+    return { parsed }
+  })
+  .transform('reshape', ({ parsed }) => ({
+    // Completely replace context
+    id: parsed.id,
+    name: parsed.name
+  }))
+  // rawData and parsed are gone, only id and name exist
+  .step('process', ({ id, name }) => {
+    return { processed: true }
+  })
+```
+
+<Warning>
+  Transform must return a value. Returning `void`, `null`, or `undefined` will throw an error.
+</Warning>
+
+### When to Use Transform
+
+- **Data reshaping**: When you need to change the structure of your context
+- **Cleanup**: When you want to remove unnecessary data
+- **Type narrowing**: When you want to enforce a specific shape
+
+```typescript
+// Before transform: { userId: string, tempData: any, cache: Map, ... }
+.transform('cleanup', ({ userId }) => ({ userId }))
+// After transform: { userId: string }
+```
+
+## Branch Steps
+
+Branching allows conditional execution of sub-pipelines:
+
+```typescript
+const pipeline = stepkit<{ plan: string }>()
+  .step('init', () => ({ initialized: true }))
+  .branchOn(
+    {
+      when: ({ plan }) => plan === 'premium',
+      then: (builder) =>
+        builder.step('fetch-premium', () => ({ features: ['a', 'b'] }))
+    },
+    {
+      when: ({ plan }) => plan === 'basic',
+      then: (builder) =>
+        builder.step('fetch-basic', () => ({ features: ['c'] }))
+    },
+    {
+      default: (builder) =>
+        builder.step('fetch-free', () => ({ features: [] }))
+    }
+  )
+```
+
+### Prebuilt Branch Pipelines
+
+You can pass prebuilt pipelines to branches:
+
+```typescript
+const premiumFlow = stepkit<{ userId: string; plan: string }>()
+  .step('fetch-premium-features', () => ({ features: ['a', 'b'] }))
+  .step('fetch-premium-limits', () => ({ limits: { api: 10000 } }))
+
+const pipeline = stepkit<{ userId: string; plan: string }>()
+  .branchOn(
+    {
+      when: ({ plan }) => plan === 'premium',
+      then: premiumFlow  // Use prebuilt pipeline
+    },
+    {
+      default: (builder) => builder.step('basic', () => ({ features: [] }))
+    }
+  )
+```
+
+## Nested Pipelines
+
+You can use entire pipelines as steps:
+
+```typescript
+const fetchUserPipeline = stepkit<{ userId: string }>()
+  .step('fetch-profile', ({ userId }) => ({ name: 'John' }))
+  .step('fetch-avatar', ({ userId }) => ({ avatar: 'url' }))
+
+const mainPipeline = stepkit<{ userId: string }>()
+  .step('validate', ({ userId }) => ({ valid: true }))
+  .step('fetch-user', fetchUserPipeline)  // Nested pipeline
+  .step('process', ({ name, avatar }) => ({ done: true }))
+```
+
+## Step Icons
+
+When logging is enabled, different step types show different icons:
+
+- 📍 **Step**: Regular step
+- 🔄 **Transform**: Context transformation
+- 🔀 **Branch**: Conditional branching
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Keep Steps Focused" icon="bullseye">
+    Each step should do one thing well. Break complex operations into multiple steps.
+  </Card>
+  
+  <Card title="Use Named Steps" icon="tag">
+    Always name your steps for better debugging and logging.
+  </Card>
+  
+  <Card title="Handle Errors Gracefully" icon="shield">
+    Use `onError` configuration for non-critical steps to prevent pipeline failures.
+  </Card>
+  
+  <Card title="Leverage Type Safety" icon="check">
+    Let TypeScript infer types from your step outputs for maximum safety.
+  </Card>
+</CardGroup>

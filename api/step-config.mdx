@@ -1,0 +1,284 @@
+---
+title: 'StepConfig'
+description: 'Configuration options for individual steps'
+---
+
+## Overview
+
+The `StepConfig` type defines configuration options that can be applied to individual steps in a pipeline. These options control step behavior including conditional execution, error handling, logging, timeouts, and more.
+
+## Type Definition
+
+```typescript
+type StepConfig<TCtx = unknown> = {
+  name?: string
+  condition?: boolean | ((context: TCtx) => boolean | Promise<boolean>)
+  onError?: 'throw' | 'continue' | 'skip-remaining'
+  log?: boolean
+  timeout?: number
+  parallelMode?: ParallelMode
+  mergePolicy?: MergePolicy
+} & RetryConfig & { circuitBreaker?: CircuitBreakerConfig }
+```
+
+## Configuration Fields
+
+<ParamField path="name" type="string" optional>
+  Custom name for the step. If not provided, an auto-generated name will be used.
+  
+  ```typescript
+  pipeline.step({ name: 'fetchUser' }, async (ctx) => {
+    return { user: await getUser(ctx.userId) }
+  })
+  ```
+</ParamField>
+
+<ParamField path="condition" type="boolean | ((context: TCtx) => boolean | Promise<boolean>)" optional>
+  Determines whether the step should execute. Can be a static boolean or a function that receives the current context and returns a boolean (or Promise of boolean).
+  
+  When a step has a condition, its outputs become optional in TypeScript types, as the step may be skipped.
+  
+  ```typescript
+  // Static condition
+  pipeline.step(
+    { condition: shouldProcess },
+    async (ctx) => ({ result: processData(ctx) })
+  )
+  
+  // Dynamic condition based on context
+  pipeline.step(
+    { condition: (ctx) => ctx.isAdmin },
+    async (ctx) => ({ adminData: await fetchAdminData() })
+  )
+  
+  // Async condition
+  pipeline.step(
+    { condition: async (ctx) => await checkPermission(ctx.userId) },
+    async (ctx) => ({ data: await sensitiveOperation() })
+  )
+  ```
+</ParamField>
+
+<ParamField path="onError" type="'throw' | 'continue' | 'skip-remaining'" optional default="throw">
+  Controls how the pipeline handles errors thrown by this step.
+  
+  - `throw`: (default) Error propagates and stops the pipeline
+  - `continue`: Error is caught, logged, and pipeline continues to next step
+  - `skip-remaining`: Error is caught, logged, and all remaining steps are skipped
+  
+  When set to `continue` or `skip-remaining`, step outputs become optional in TypeScript types.
+  
+  ```typescript
+  // Continue on error
+  pipeline.step(
+    { onError: 'continue' },
+    async (ctx) => {
+      const data = await riskyOperation()
+      return { data }
+    }
+  )
+  
+  // Skip remaining steps on error
+  pipeline.step(
+    { onError: 'skip-remaining' },
+    async (ctx) => {
+      await criticalOperation()
+      return {}
+    }
+  )
+  ```
+</ParamField>
+
+<ParamField path="log" type="boolean" optional>
+  Whether to log this step's execution. Overrides the global log setting for this specific step.
+  
+  ```typescript
+  // Disable logging for sensitive step
+  pipeline.step(
+    { log: false },
+    async (ctx) => {
+      return { password: await hashPassword(ctx.rawPassword) }
+    }
+  )
+  
+  // Enable logging for specific step when global logging is off
+  pipeline.step(
+    { log: true },
+    async (ctx) => {
+      return { result: await importantOperation() }
+    }
+  )
+  ```
+</ParamField>
+
+<ParamField path="timeout" type="number" optional>
+  Maximum execution time in milliseconds. If the step exceeds this duration, it will be aborted and an error will be thrown.
+  
+  When a timeout is set, step outputs become optional in TypeScript types, as the step may not complete.
+  
+  ```typescript
+  // Set 5 second timeout
+  pipeline.step(
+    { timeout: 5000 },
+    async (ctx) => {
+      const data = await slowOperation()
+      return { data }
+    }
+  )
+  
+  // Combine with onError to handle timeouts gracefully
+  pipeline.step(
+    { timeout: 3000, onError: 'continue' },
+    async (ctx) => {
+      const optional = await possiblySlowOperation()
+      return { optional }
+    }
+  )
+  ```
+</ParamField>
+
+<ParamField path="parallelMode" type="ParallelMode" optional>
+  Controls behavior for parallel step execution. Only applicable when using `pipeline.parallel()`.
+  
+  Type: `'all' | 'settled'`
+  
+  - `all`: (default) All parallel steps must succeed, or the entire parallel group fails
+  - `settled`: All parallel steps run to completion regardless of failures
+  
+  ```typescript
+  // All must succeed
+  pipeline.parallel(
+    { parallelMode: 'all' },
+    (p) => p
+      .step({}, async (ctx) => ({ a: await fetchA() }))
+      .step({}, async (ctx) => ({ b: await fetchB() }))
+  )
+  
+  // Continue even if some fail
+  pipeline.parallel(
+    { parallelMode: 'settled' },
+    (p) => p
+      .step({}, async (ctx) => ({ a: await fetchA() }))
+      .step({}, async (ctx) => ({ b: await fetchB() }))
+  )
+  ```
+</ParamField>
+
+<ParamField path="mergePolicy" type="MergePolicy" optional default="error">
+  Controls how context merging handles key conflicts when a step outputs a key that already exists in the context.
+  
+  Type: `'override' | 'error' | 'warn' | 'skip'`
+  
+  - `override`: New value replaces existing value
+  - `error`: (default) Throws an error on conflict
+  - `warn`: Logs a warning and uses new value
+  - `skip`: Keeps existing value and ignores new value
+  
+  ```typescript
+  // Override existing values
+  pipeline.step(
+    { mergePolicy: 'override' },
+    async (ctx) => {
+      return { userId: newUserId } // Replaces existing userId
+    }
+  )
+  
+  // Warn on conflicts
+  pipeline.step(
+    { mergePolicy: 'warn' },
+    async (ctx) => {
+      return { count: newCount } // Warns if count exists
+    }
+  )
+  
+  // Skip if key exists
+  pipeline.step(
+    { mergePolicy: 'skip' },
+    async (ctx) => {
+      return { default: 'value' } // Only sets if default doesn't exist
+    }
+  )
+  ```
+</ParamField>
+
+## Retry Configuration
+
+StepConfig extends [RetryConfig](/api/retry-config#retryconfig) to support automatic retries:
+
+<ParamField path="retries" type="number" optional>
+  Number of retry attempts after initial failure. See [RetryConfig](/api/retry-config#retries) for details.
+</ParamField>
+
+<ParamField path="retryDelayMs" type="number | ((attempt: number, error: Error) => number)" optional>
+  Delay between retry attempts. See [RetryConfig](/api/retry-config#retrydelayms) for details.
+</ParamField>
+
+<ParamField path="shouldRetry" type="(error: Error) => boolean" optional>
+  Function to determine if an error should trigger a retry. See [RetryConfig](/api/retry-config#shouldretry) for details.
+</ParamField>
+
+## Circuit Breaker
+
+<ParamField path="circuitBreaker" type="CircuitBreakerConfig" optional>
+  Circuit breaker configuration to prevent cascading failures. See [CircuitBreakerConfig](/api/retry-config#circuitbreakerconfig) for details.
+  
+  ```typescript
+  pipeline.step(
+    {
+      circuitBreaker: {
+        failureThreshold: 3,
+        cooldownMs: 60000,
+        behaviorOnOpen: 'skip'
+      }
+    },
+    async (ctx) => {
+      return { data: await unreliableService() }
+    }
+  )
+  ```
+</ParamField>
+
+## Complete Example
+
+```typescript
+import { createPipeline } from 'stepkit'
+
+const pipeline = createPipeline({ userId: '123' })
+  .step(
+    {
+      name: 'fetchUser',
+      timeout: 5000,
+      retries: 3,
+      retryDelayMs: 1000,
+      onError: 'continue',
+      log: true
+    },
+    async (ctx) => {
+      const user = await fetchUser(ctx.userId)
+      return { user }
+    }
+  )
+  .step(
+    {
+      name: 'processUser',
+      condition: (ctx) => ctx.user !== undefined,
+      mergePolicy: 'override',
+      circuitBreaker: {
+        failureThreshold: 5,
+        cooldownMs: 30000
+      }
+    },
+    async (ctx) => {
+      const processed = await processUser(ctx.user!)
+      return { result: processed }
+    }
+  )
+
+const result = await pipeline.run()
+```
+
+## Related Types
+
+- [RetryConfig](/api/retry-config#retryconfig) - Retry configuration options
+- [CircuitBreakerConfig](/api/retry-config#circuitbreakerconfig) - Circuit breaker configuration
+- [PipelineConfig](/api/pipeline-config) - Pipeline-level configuration

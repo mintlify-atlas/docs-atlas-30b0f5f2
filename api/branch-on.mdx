@@ -1,0 +1,355 @@
+---
+title: .branchOn()
+description: Add conditional branching logic to your pipeline
+---
+
+The `.branchOn()` method allows you to execute different sub-pipelines based on runtime conditions. It evaluates a series of `when/then` cases and executes the first matching branch, or a `default` branch if no conditions match.
+
+## Signatures
+
+### Anonymous Branch
+
+```typescript
+branchOn<TCases extends readonly (
+  | {
+      name?: string
+      when: (ctx: TContext) => boolean | Promise<boolean>
+      then: StepkitBuilder<TContext, any, any>
+        | ((builder: StepkitBuilder<any, TContext, any>) => StepkitBuilder<any, any, any>)
+    }
+  | {
+      name?: string
+      default: StepkitBuilder<TContext, any, any>
+        | ((builder: StepkitBuilder<any, TContext, any>) => StepkitBuilder<any, any, any>)
+    }
+)[]>(
+  ...cases: TCases
+): StepkitBuilder<
+  TInput,
+  TContext & MergeBranchOutputs<TContext, TCases>,
+  ...
+>
+```
+
+### Named Branch
+
+```typescript
+branchOn<TName extends string, TCases extends readonly (...)[]>(
+  name: TName,
+  ...cases: TCases
+): StepkitBuilder<
+  TInput,
+  TContext & MergeBranchOutputs<TContext, TCases>,
+  ...
+>
+```
+
+### Branch with Configuration
+
+```typescript
+branchOn<TName extends string, TCases extends readonly (...)[]>(
+  config: Omit<StepConfig<TContext>, 'name'> & { name: TName },
+  ...cases: TCases
+): StepkitBuilder<
+  TInput,
+  TContext & MergeBranchOutputs<TContext, TCases>,
+  ...
+>
+```
+
+## Parameters
+
+<ParamField path="name" type="string" optional>
+  Optional name for the branch step. If not provided, a name like `branch-1`, `branch-2`, etc. will be auto-generated.
+</ParamField>
+
+<ParamField path="config" type="StepConfig<TContext>" optional>
+  Optional configuration object for the branch. See [.step() configuration](/api/step#parameters) for available options.
+</ParamField>
+
+<ParamField path="...cases" type="BranchCase[]">
+  One or more branch cases to evaluate. Each case is either a `when/then` condition or a `default` fallback.
+
+  <Expandable title="When/Then Case">
+    <ParamField path="name" type="string" optional>
+      Optional name for this case branch. Defaults to `'branch-case'`.
+    </ParamField>
+
+    <ParamField path="when" type="(ctx: TContext) => boolean | Promise<boolean>">
+      Predicate function that receives the current context and returns whether this branch should execute.
+    </ParamField>
+
+    <ParamField path="then" type="StepkitBuilder | ((builder) => StepkitBuilder)">
+      The sub-pipeline to execute if the condition is true. Can be:
+      - A pre-built pipeline
+      - A function that receives a builder and returns a pipeline
+    </ParamField>
+  </Expandable>
+
+  <Expandable title="Default Case">
+    <ParamField path="name" type="string" optional>
+      Optional name for this default branch. Defaults to `'default-case'`.
+    </ParamField>
+
+    <ParamField path="default" type="StepkitBuilder | ((builder) => StepkitBuilder)">
+      The sub-pipeline to execute if no other conditions match. Can be:
+      - A pre-built pipeline
+      - A function that receives a builder and returns a pipeline
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Returns
+
+<ResponseField name="StepkitBuilder" type="StepkitBuilder<TInput, TContext & MergeBranchOutputs, ...>">
+  A new builder instance with the context type updated to include outputs from all possible branches (as optional/partial types).
+</ResponseField>
+
+## Examples
+
+### Basic Conditional Logic
+
+```typescript
+const pipeline = stepkit<{ userType: 'premium' | 'free' }>()
+  .branchOn(
+    {
+      when: ({ userType }) => userType === 'premium',
+      then: (b) => b
+        .step(async () => {
+          return { features: ['advanced', 'support'] }
+        })
+    },
+    {
+      default: (b) => b
+        .step(async () => {
+          return { features: ['basic'] }
+        })
+    }
+  )
+  .step(async ({ features }) => {
+    console.log('Available features:', features)
+  })
+```
+
+### Multiple Conditions
+
+```typescript
+type Input = {
+  role: 'admin' | 'user' | 'guest'
+}
+
+const pipeline = stepkit<Input>()
+  .branchOn(
+    {
+      name: 'admin-flow',
+      when: ({ role }) => role === 'admin',
+      then: (b) => b
+        .step(async () => {
+          const allData = await fetchAllData()
+          return { data: allData, permissions: ['read', 'write', 'delete'] }
+        })
+    },
+    {
+      name: 'user-flow',
+      when: ({ role }) => role === 'user',
+      then: (b) => b
+        .step(async () => {
+          const userData = await fetchUserData()
+          return { data: userData, permissions: ['read', 'write'] }
+        })
+    },
+    {
+      name: 'guest-flow',
+      default: (b) => b
+        .step(async () => {
+          return { data: [], permissions: ['read'] }
+        })
+    }
+  )
+  .step(async ({ data, permissions }) => {
+    console.log('Permissions:', permissions)
+    console.log('Data:', data)
+  })
+```
+
+### Using Pre-built Pipelines
+
+```typescript
+const premiumPipeline = stepkit()
+  .step(async () => {
+    const advanced = await loadAdvancedFeatures()
+    return { advanced }
+  })
+  .step(async () => {
+    const support = await getPrioritySupport()
+    return { support }
+  })
+
+const freePipeline = stepkit()
+  .step(async () => {
+    const basic = await loadBasicFeatures()
+    return { basic }
+  })
+
+const pipeline = stepkit<{ isPremium: boolean }>()
+  .branchOn(
+    {
+      when: ({ isPremium }) => isPremium,
+      then: premiumPipeline
+    },
+    {
+      default: freePipeline
+    }
+  )
+```
+
+### Async Conditions
+
+```typescript
+const pipeline = stepkit<{ userId: string }>()
+  .branchOn(
+    {
+      name: 'check-subscription',
+      when: async ({ userId }) => {
+        const subscription = await checkSubscription(userId)
+        return subscription.status === 'active'
+      },
+      then: (b) => b
+        .step(async () => {
+          return { hasAccess: true }
+        })
+    },
+    {
+      default: (b) => b
+        .step(async () => {
+          return { hasAccess: false }
+        })
+    }
+  )
+```
+
+### Named Branch with Configuration
+
+```typescript
+const pipeline = stepkit()
+  .branchOn(
+    {
+      name: 'payment-routing',
+      timeout: 5000,
+      onError: 'continue',
+      log: true
+    },
+    {
+      name: 'stripe-flow',
+      when: ({ paymentMethod }) => paymentMethod === 'stripe',
+      then: (b) => b
+        .step(async () => {
+          const result = await processStripePayment()
+          return { paymentResult: result }
+        })
+    },
+    {
+      name: 'paypal-flow',
+      when: ({ paymentMethod }) => paymentMethod === 'paypal',
+      then: (b) => b
+        .step(async () => {
+          const result = await processPayPalPayment()
+          return { paymentResult: result }
+        })
+    },
+    {
+      name: 'fallback',
+      default: (b) => b
+        .step(async () => {
+          throw new Error('Unsupported payment method')
+        })
+    }
+  )
+```
+
+### Nested Branching
+
+```typescript
+const pipeline = stepkit<{ country: string; isPremium: boolean }>()
+  .branchOn(
+    {
+      when: ({ country }) => country === 'US',
+      then: (b) => b
+        .step(async () => ({ region: 'North America' }))
+        .branchOn(
+          {
+            when: ({ isPremium }) => isPremium,
+            then: (b) => b.step(async () => ({ pricing: 'premium-us' }))
+          },
+          {
+            default: (b) => b.step(async () => ({ pricing: 'standard-us' }))
+          }
+        )
+    },
+    {
+      when: ({ country }) => country === 'UK',
+      then: (b) => b
+        .step(async () => ({ region: 'Europe' }))
+        .branchOn(
+          {
+            when: ({ isPremium }) => isPremium,
+            then: (b) => b.step(async () => ({ pricing: 'premium-uk' }))
+          },
+          {
+            default: (b) => b.step(async () => ({ pricing: 'standard-uk' }))
+          }
+        )
+    },
+    {
+      default: (b) => b
+        .step(async () => ({ region: 'Other', pricing: 'standard-intl' }))
+    }
+  )
+```
+
+## Type Safety
+
+The `.branchOn()` method provides sophisticated type safety:
+
+- All possible branch outputs are merged as optional/partial types
+- Downstream steps see the union of all possible outputs
+- TypeScript ensures you handle potentially undefined values from branches
+
+```typescript
+const pipeline = stepkit<{ isAdmin: boolean }>()
+  .branchOn(
+    {
+      when: ({ isAdmin }) => isAdmin,
+      then: (b) => b.step(async () => ({ adminData: 'secret' }))
+    },
+    {
+      default: (b) => b.step(async () => ({ userData: 'public' }))
+    }
+  )
+  .step(async ({ adminData, userData }) => {
+    // TypeScript knows both might be undefined
+    // adminData?: string
+    // userData?: string
+    
+    if (adminData) {
+      console.log('Admin access:', adminData)
+    } else if (userData) {
+      console.log('User access:', userData)
+    }
+  })
+```
+
+## Behavior
+
+- Cases are evaluated in order
+- The first `when` condition that returns `true` executes its `then` branch
+- If no `when` conditions match, the `default` branch executes (if provided)
+- If no conditions match and there's no `default`, the branch step is skipped
+- Only one branch executes per `.branchOn()` call
+- Branch outputs are merged into the context (only new keys from the executed branch)
+
+## See Also
+
+- [.step()](/api/step) - Add execution steps
+- [.transform()](/api/transform) - Replace the entire context
+- [Branching](/features/branching) - More examples of conditional logic

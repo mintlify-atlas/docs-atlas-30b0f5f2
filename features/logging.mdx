@@ -1,0 +1,487 @@
+---
+title: Logging & Performance
+description: Track pipeline execution with detailed logs and performance metrics
+---
+
+## Overview
+
+Stepkit provides built-in logging and performance tracking:
+- **Structured logs** for each step execution
+- **Stopwatch timing** for performance analysis
+- **Performance summaries** with statistics
+- **Custom log functions** for integration with logging services
+- **Per-step logging** control
+
+## Basic Logging
+
+Enable logging by passing a `log` option:
+
+```typescript
+const pipeline = stepkit<{ userId: string }>()
+  .step('fetch-user', async ({ userId }) => {
+    return { user: await getUser(userId) }
+  })
+  .step('process', ({ user }) => {
+    return { processed: true }
+  })
+
+await pipeline.run({ userId: '42' }, { log: true })
+```
+
+Output:
+```text
+🚀 Starting pipeline with input: {
+  userId: "42"
+}
+
+📍 Step: fetch-user
+✅ fetch-user completed
+   Output: user
+
+📍 Step: process
+✅ process completed
+   Output: processed
+
+✨ Pipeline completed successfully
+```
+
+## Stopwatch Mode
+
+Enable detailed performance tracking with the `stopwatch` option:
+
+```typescript
+const pipeline = stepkit<{ userId: string }>()
+  .step('fetch-user', async ({ userId }) => {
+    await sleep(150)
+    return { user: { id: userId, email: 'user@example.com' } }
+  })
+  .step(
+    'fetch-data',
+    async ({ user }) => {
+      await sleep(120)
+      return { orders: [{ id: 'o1' }, { id: 'o2' }] }
+    },
+    async ({ user }) => {
+      await sleep(80)
+      return { alerts: ['notice'] }
+    }
+  )
+  .step('process', ({ orders }) => ({ orderCount: orders.length }))
+
+await pipeline.run({ userId: '42' }, { log: { stopwatch: true } })
+```
+
+Output:
+```text
+🚀 Starting pipeline with input: {
+  userId: "42",
+}
+
+📍 Step: fetch-user
+✅ fetch-user completed in 178ms
+   Output: user
+
+📍 Step: fetch-data
+✅ fetch-data completed in 121ms
+   Output: orders, alerts
+
+📍 Step: process
+✅ process completed in 0ms
+   Output: orderCount
+
+⏱️  Performance Summary:
+┌──────────────────────────────────────────────────────┐
+│ ✅ fetch-user                                  178ms │
+│ ✅ fetch-data                                  121ms │
+│ ✅ process                                       0ms │
+└──────────────────────────────────────────────────────┘
+
+📊 Statistics:
+   Average: 100ms
+   Slowest: fetch-user (178ms)
+   Fastest: process (0ms)
+
+⏰ Total Pipeline Time: 299ms
+
+✨ Pipeline completed successfully
+```
+
+## Log Configuration
+
+<ParamField path="log" type="boolean | LogConfig">
+  Enable logging for the pipeline. Can be a boolean or a configuration object.
+</ParamField>
+
+### LogConfig Options
+
+<ParamField path="logFn" type="(message: string, ...args: unknown[]) => void" default="console.log">
+  Custom function for standard log messages.
+</ParamField>
+
+<ParamField path="errorLogFn" type="(message: string, ...args: unknown[]) => void" default="console.error">
+  Custom function for error messages.
+</ParamField>
+
+<ParamField path="stopwatch" type="boolean | StopwatchConfig">
+  Enable performance tracking. Can be a boolean or a configuration object for fine-grained control.
+</ParamField>
+
+### Stopwatch Configuration
+
+<ParamField path="showStepDuration" type="boolean" default="true">
+  Show duration for each step as it completes.
+</ParamField>
+
+<ParamField path="showSummary" type="boolean" default="true">
+  Show the performance summary table at the end.
+</ParamField>
+
+<ParamField path="showTotal" type="boolean" default="true">
+  Show the total pipeline execution time.
+</ParamField>
+
+## Configuring Logs
+
+### At Build Time
+
+Configure logging when creating the pipeline:
+
+```typescript
+const pipeline = stepkit<{ id: string }>({
+  log: {
+    stopwatch: {
+      showStepDuration: true,
+      showSummary: true,
+      showTotal: true,
+    },
+  },
+})
+  .step('step-1', () => ({ a: 1 }))
+  .step('step-2', () => ({ b: 2 }))
+
+await pipeline.run({ id: '1' })
+// Logging applies to all runs
+```
+
+### At Runtime
+
+Override logging configuration for a specific run:
+
+```typescript
+const pipeline = stepkit<{ id: string }>()
+  .step('step-1', () => ({ a: 1 }))
+  .step('step-2', () => ({ b: 2 }))
+
+// Run with logging
+await pipeline.run({ id: '1' }, { log: { stopwatch: true } })
+
+// Run without logging
+await pipeline.run({ id: '2' })
+```
+
+## Custom Log Functions
+
+Integrate with logging services:
+
+```typescript
+import { logger } from './logger'
+
+const pipeline = stepkit<{ userId: string }>()
+  .step('fetch-user', async ({ userId }) => {
+    return { user: await getUser(userId) }
+  })
+
+await pipeline.run(
+  { userId: '42' },
+  {
+    log: {
+      logFn: (message, ...args) => {
+        logger.info(message, ...args)
+      },
+      errorLogFn: (message, ...args) => {
+        logger.error(message, ...args)
+      },
+      stopwatch: true,
+    },
+  },
+)
+```
+
+### Structured Logging
+
+```typescript
+import pino from 'pino'
+
+const logger = pino()
+
+const pipeline = stepkit<{ requestId: string }>()
+  .step('process-request', async ({ requestId }) => {
+    return { result: 'done' }
+  })
+
+await pipeline.run(
+  { requestId: 'req-123' },
+  {
+    log: {
+      logFn: (message, ...args) => {
+        logger.info({ message, args }, 'Pipeline step')
+      },
+      errorLogFn: (message, ...args) => {
+        logger.error({ message, args }, 'Pipeline error')
+      },
+      stopwatch: true,
+    },
+  },
+)
+```
+
+## Per-Step Logging
+
+Control logging for individual steps:
+
+```typescript
+const pipeline = stepkit<{ id: string }>()
+  .step({ name: 'step-1', log: true }, () => ({ a: 1 }))
+  .step({ name: 'step-2', log: false }, () => ({ b: 2 })) // Silent
+  .step('step-3', () => ({ c: 3 }))
+
+await pipeline.run({ id: '1' }, { log: true })
+// Only step-1 and step-3 produce logs
+```
+
+## Step Icons
+
+Different step types have distinct icons:
+
+- 📍 **Step**: Regular step execution
+- 🔄 **Transform**: Context transformation
+- 🔀 **Branch**: Conditional branching
+- ⏭️  **Skip**: Step skipped (condition or resume)
+- ✅ **Success**: Step completed successfully
+- ❌ **Error**: Step failed
+
+```typescript
+const pipeline = stepkit<{ value: number }>()
+  .step('regular', () => ({ a: 1 }))
+  .transform('cleanup', ({ value }) => ({ value }))
+  .branchOn(
+    'route',
+    {
+      when: ({ value }) => value > 0,
+      then: (b) => b.step('positive', () => ({ sign: 'positive' })),
+    },
+    {
+      default: (b) => b.step('negative', () => ({ sign: 'negative' })),
+    },
+  )
+
+await pipeline.run({ value: 5 }, { log: { stopwatch: true } })
+```
+
+Output:
+```text
+📍 Step: regular
+✅ regular completed in 0ms
+
+🔄 Transform: cleanup
+✅ cleanup completed in 0ms
+
+🔀 Branch: route
+   ↳ Executing: positive
+
+📍 Step: route/positive/positive
+✅ route/positive/positive completed in 0ms
+✅ route completed in 1ms
+```
+
+## Performance Summary
+
+The performance summary includes:
+
+1. **Table of steps** with status icons and durations
+2. **Statistics**:
+   - Average duration across successful steps
+   - Slowest step with duration
+   - Fastest step with duration
+3. **Total pipeline time**
+
+```text
+⏱️  Performance Summary:
+┌──────────────────────────────────────────────────────┐
+│ ✅ fetch-user                                  178ms │
+│ ✅ fetch-data                                  121ms │
+│ ❌ maybe-slow                                  201ms │
+│ ✅ process                                       0ms │
+└──────────────────────────────────────────────────────┘
+
+📊 Statistics:
+   Average: 50ms
+   Slowest: fetch-user (178ms)
+   Fastest: process (0ms)
+
+⏰ Total Pipeline Time: 511ms
+```
+
+## Error Logging
+
+Failed steps are clearly indicated:
+
+```typescript
+const pipeline = stepkit()
+  .step({ name: 'failing', onError: 'continue' }, () => {
+    throw new Error('Something went wrong')
+  })
+  .step('continue', () => ({ done: true }))
+
+await pipeline.run({}, { log: { stopwatch: true } })
+```
+
+Output:
+```text
+📍 Step: failing
+❌ failing failed after 2ms
+   Error: Error: Something went wrong
+
+📍 Step: continue
+✅ continue completed in 0ms
+```
+
+## Logging with Branches
+
+Branches show which path was taken:
+
+```typescript
+const pipeline = stepkit<{ type: 'a' | 'b' }>()
+  .branchOn(
+    'route',
+    {
+      name: 'type-a',
+      when: ({ type }) => type === 'a',
+      then: (b) => b.step('handle-a', () => ({ result: 'A' })),
+    },
+    {
+      name: 'type-b',
+      when: ({ type }) => type === 'b',
+      then: (b) => b.step('handle-b', () => ({ result: 'B' })),
+    },
+  )
+
+await pipeline.run({ type: 'a' }, { log: true })
+```
+
+Output:
+```text
+🔀 Branch: route
+   ↳ Executing: type-a
+
+📍 Step: route/type-a/handle-a
+✅ route/type-a/handle-a completed
+```
+
+## Disabling Specific Log Components
+
+```typescript
+await pipeline.run(
+  { userId: '42' },
+  {
+    log: {
+      stopwatch: {
+        showStepDuration: false, // Hide individual step durations
+        showSummary: true,       // Show summary table
+        showTotal: true,         // Show total time
+      },
+    },
+  },
+)
+```
+
+Output:
+```text
+🚀 Starting pipeline with input: { userId: "42" }
+
+📍 Step: fetch-user
+✅ fetch-user completed
+
+📍 Step: process
+✅ process completed
+
+⏱️  Performance Summary:
+┌──────────────────────────────────────────────────────┐
+│ ✅ fetch-user                                  178ms │
+│ ✅ process                                       0ms │
+└──────────────────────────────────────────────────────┘
+
+⏰ Total Pipeline Time: 178ms
+```
+
+## Combining with Other Features
+
+### With Checkpoints
+
+Logs show resume information:
+
+```typescript
+await pipeline.runCheckpoint(checkpoint, { log: { stopwatch: true } })
+```
+
+Output:
+```text
+🚀 Resuming pipeline from checkpoint step: step-2
+
+⏭️  Step: step-1 (resume-skip)
+⏭️  Step: step-2 (resume-skip)
+
+📍 Step: step-3
+✅ step-3 completed in 5ms
+
+⏱️  Performance Summary:
+↪️ Resumed from checkpoint: step-2
+┌──────────────────────────────────────────────────────┐
+│ ⏭️  step-1                                    skipped │
+│ ⏭️  step-2                                    skipped │
+│ ✅ step-3                                         5ms │
+└──────────────────────────────────────────────────────┘
+```
+
+### With Stop Early
+
+Logs indicate early termination:
+
+```typescript
+await pipeline.run(
+  { n: 0 },
+  {
+    log: { stopwatch: true },
+    onStepComplete: (e) => {
+      if (e.stepName === 's2') e.stopPipeline()
+    },
+  },
+)
+```
+
+Output:
+```text
+⏹️ Early stop requested by: s2
+
+⏱️  Performance Summary:
+┌──────────────────────────────────────────────────────┐
+│ ✅ s1                                            10ms │
+│ ✅ s2                                             5ms │
+└──────────────────────────────────────────────────────┘
+
+⏹️  Stopped early (requested by s2)
+
+⏰ Total Pipeline Time: 15ms
+
+✨ Pipeline stopped early
+```
+
+## Best Practices
+
+<Tip>
+- Use `log: { stopwatch: true }` during development for detailed insights
+- Use custom `logFn` to integrate with your logging infrastructure
+- Disable step-level logging for noisy or sensitive operations
+- Use performance summaries to identify bottlenecks
+- Keep logging enabled in production with structured loggers
+</Tip>

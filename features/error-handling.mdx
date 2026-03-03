@@ -1,0 +1,396 @@
+---
+title: Error Handling
+description: Handle failures gracefully with retries, timeouts, and circuit breakers
+---
+
+## Overview
+
+Stepkit provides comprehensive error handling capabilities:
+- **Error strategies**: Control pipeline behavior when steps fail
+- **Retries**: Automatically retry transient failures
+- **Timeouts**: Guard against slow operations
+- **Circuit breakers**: Prevent cascading failures
+- **Abort signals**: Cancel pipeline execution
+
+## Error Handling Strategies
+
+Control what happens when a step fails using the `onError` configuration:
+
+<ParamField path="onError" type="'throw' | 'continue' | 'skip-remaining'" default="'throw'">
+  Determines how to handle step failures:
+  - `'throw'`: Re-throw the error and stop the pipeline (default)
+  - `'continue'`: Log the error and continue to the next step
+  - `'skip-remaining'`: Log the error and skip all remaining steps
+</ParamField>
+
+### Mode: `throw` (default)
+
+Errors stop pipeline execution:
+
+```typescript
+const pipeline = stepkit()
+  .step('step-1', () => ({ a: 1 }))
+  .step('step-2', () => {
+    throw new Error('Something went wrong')
+  })
+  .step('step-3', () => ({ c: 3 })) // never executes
+
+try {
+  await pipeline.run({})
+} catch (error) {
+  console.error('Pipeline failed:', error)
+}
+```
+
+### Mode: `continue`
+
+Continue pipeline execution despite failures:
+
+```typescript
+const pipeline = stepkit()
+  .step(
+    { name: 'optional-step', onError: 'continue' },
+    async () => {
+      // This might fail, but pipeline continues
+      return { data: await fetchData() }
+    },
+  )
+  .step('process', ({ data }) => {
+    // data is typed as optional: T | undefined
+    return { hasData: !!data }
+  })
+
+await pipeline.run({})
+```
+
+<Note>
+When using `onError: 'continue'`, step outputs are typed as optional (`Partial<T>`) since the step might fail and produce no output.
+</Note>
+
+### Mode: `skip-remaining`
+
+Stop execution but don't throw:
+
+```typescript
+const pipeline = stepkit()
+  .step('validate', ({ input }) => {
+    if (!isValid(input)) throw new Error('Invalid input')
+    return { validated: true }
+  })
+  .step(
+    { name: 'critical', onError: 'skip-remaining' },
+    async () => ({ data: await fetchCriticalData() }),
+  )
+  .step('process', ({ data }) => {
+    // Only runs if critical step succeeded
+    return { processed: true }
+  })
+
+const result = await pipeline.run({ input: 'test' })
+// Returns partial result without throwing
+```
+
+## Retries
+
+Automatically retry failed steps with configurable delay and conditions:
+
+<ParamField path="retries" type="number" default="0">
+  Number of retry attempts after the initial execution.
+</ParamField>
+
+<ParamField path="retryDelayMs" type="number | (attempt: number, error: Error) => number" default="0">
+  Delay between retries in milliseconds. Can be a fixed number or a function that receives the attempt number and error.
+</ParamField>
+
+<ParamField path="shouldRetry" type="(error: Error) => boolean" default="() => false">
+  Function that determines if a specific error should be retried. Return `true` to retry, `false` to fail immediately.
+</ParamField>
+
+### Basic Retry
+
+```typescript
+const pipeline = stepkit()
+  .step(
+    {
+      name: 'fetch-resource',
+      retries: 3,
+      retryDelayMs: 1000, // 1 second between attempts
+    },
+    async () => {
+      return { data: await fetchData() }
+    },
+  )
+
+await pipeline.run({})
+// Retries up to 3 times with 1 second delay between attempts
+```
+
+### Conditional Retry
+
+Only retry specific error types:
+
+```typescript
+const pipeline = stepkit()
+  .step(
+    {
+      name: 'fetch-resource',
+      retries: 2,
+      retryDelayMs: 250,
+      shouldRetry: (err) => /429|timeout/i.test(String(err?.message ?? err)),
+    },
+    async () => {
+      const ok = Math.random() > 0.5
+      if (!ok) throw new Error('429: too many requests')
+      return { data: { id: '42' } }
+    },
+  )
+
+await pipeline.run({})
+// Only retries on 429 errors or timeouts
+```
+
+### Exponential Backoff
+
+Use a function for dynamic retry delays:
+
+```typescript
+const pipeline = stepkit()
+  .step(
+    {
+      name: 'fetch-with-backoff',
+      retries: 4,
+      retryDelayMs: (attempt, error) => {
+        // Exponential backoff: 100ms, 200ms, 400ms, 800ms
+        return Math.pow(2, attempt) * 100
+      },
+      shouldRetry: (err) => err.message.includes('rate limit'),
+    },
+    async () => ({ data: await fetchData() }),
+  )
+
+await pipeline.run({})
+```
+
+### Retry with Continue
+
+Combine retries with error continuation:
+
+```typescript
+const fetchWithRetry = stepkit()
+  .step(
+    {
+      name: 'fetch-resource',
+      onError: 'continue',
+      retries: 2,
+      retryDelayMs: 250,
+      shouldRetry: (err) => /429|timeout/i.test(String(err?.message ?? err)),
+    },
+    async () => {
+      // Retries twice, then continues even if all attempts fail
+      const ok = Math.random() > 0.5
+      if (!ok) throw new Error('429: too many requests')
+      return { data: { id: '42' } }
+    },
+  )
+  .step('continue-anyway', ({ data }) => ({ hasData: !!data }))
+
+await fetchWithRetry.run({})
+```
+
+## Timeouts
+
+Guard against slow operations:
+
+<ParamField path="timeout" type="number">
+  Maximum time in milliseconds to wait for step completion. Throws an error if exceeded.
+</ParamField>
+
+```typescript
+const pipeline = stepkit()
+  .step(
+    { name: 'third-party-api', timeout: 1500, onError: 'continue' },
+    async () => {
+      // Simulate a slow API
+      await new Promise((r) => setTimeout(r, 2000))
+      return { thirdPartyOk: true }
+    },
+  )
+  .step('after', ({ thirdPartyOk }) => ({
+    status: thirdPartyOk ? 'used-third-party' : 'skipped-third-party',
+  }))
+
+await pipeline.run({})
+// Step times out after 1.5 seconds and continues
+```
+
+<Note>
+When a step has a `timeout`, its outputs are typed as optional since the step might not complete successfully.
+</Note>
+
+### Timeout with Retries
+
+Combine timeouts with retry logic:
+
+```typescript
+const pipeline = stepkit()
+  .step(
+    {
+      name: 'slow-api',
+      timeout: 1000,
+      retries: 2,
+      retryDelayMs: 500,
+      onError: 'continue',
+    },
+    async () => {
+      // Retries if timeout occurs
+      return { data: await fetchData() }
+    },
+  )
+
+await pipeline.run({})
+```
+
+## Circuit Breakers
+
+Prevent repeated attempts to failing operations:
+
+<ParamField path="circuitBreaker.failureThreshold" type="number" default="Infinity">
+  Number of consecutive failures before opening the circuit.
+</ParamField>
+
+<ParamField path="circuitBreaker.cooldownMs" type="number">
+  Time in milliseconds to wait before attempting to close the circuit.
+</ParamField>
+
+<ParamField path="circuitBreaker.behaviorOnOpen" type="'throw' | 'skip'" default="'throw'">
+  What to do when the circuit is open:
+  - `'throw'`: Throw an error immediately
+  - `'skip'`: Skip the step without executing it
+</ParamField>
+
+```typescript
+const pipeline = stepkit()
+  .step(
+    {
+      name: 'external-service',
+      circuitBreaker: {
+        failureThreshold: 3,
+        cooldownMs: 5000,
+        behaviorOnOpen: 'skip',
+      },
+      onError: 'continue',
+    },
+    async () => {
+      return { data: await callExternalService() }
+    },
+  )
+
+// First 3 failures open the circuit
+await pipeline.run({})
+// For the next 5 seconds, the step is skipped
+await pipeline.run({})
+// After cooldown, the circuit closes and step is attempted again
+```
+
+<Warning>
+Circuit breaker state is shared across all pipeline executions on the same builder instance. Create separate builder instances for independent circuit breakers.
+</Warning>
+
+## Abort Signals
+
+Cancel pipeline execution using an AbortController:
+
+```typescript
+const ac = new AbortController()
+
+const pipeline = stepkit()
+  .step('step-1', async () => {
+    await sleep(100)
+    return { a: 1 }
+  })
+  .step('step-2', async () => {
+    await sleep(100)
+    return { b: 2 }
+  })
+  .step('step-3', async () => {
+    await sleep(100)
+    return { c: 3 }
+  })
+
+// Cancel after 150ms
+setTimeout(() => ac.abort(), 150)
+
+try {
+  await pipeline.run({}, { signal: ac.signal })
+} catch (error) {
+  console.error('Pipeline aborted:', error.message)
+}
+```
+
+### Abort Signal Configuration
+
+Pass the signal at build time or runtime:
+
+```typescript
+// At build time (applies to all runs)
+const pipeline = stepkit({}, { signal: ac.signal })
+await pipeline.run({})
+
+// At runtime (applies to this run only)
+const pipeline = stepkit()
+await pipeline.run({}, { signal: ac.signal })
+```
+
+## Error Callbacks
+
+React to errors as they occur:
+
+```typescript
+const pipeline = stepkit()
+  .step('step-1', () => ({ a: 1 }))
+  .step({ name: 'step-2', onError: 'continue' }, () => {
+    throw new Error('Step 2 failed')
+  })
+  .step('step-3', () => ({ c: 3 }))
+
+await pipeline.run({}, {
+  onError: (stepName, error) => {
+    console.error(`Step ${stepName} failed:`, error.message)
+    // Log to monitoring service, send alert, etc.
+  },
+})
+```
+
+## Type Safety with Error Handling
+
+Steps with error handling or timeouts have optional outputs:
+
+```typescript
+const pipeline = stepkit<{ id: string }>()
+  .step(
+    { name: 'fetch', timeout: 1000, onError: 'continue' },
+    async ({ id }) => ({ name: 'John', age: 30 }),
+  )
+  .step('process', ({ name, age }) => {
+    // Both name and age are typed as: string | undefined, number | undefined
+    return { 
+      greeting: name ? `Hello ${name}` : 'Hello stranger',
+      canDrive: (age ?? 0) >= 18,
+    }
+  })
+```
+
+## Best Practices
+
+<Tip>
+- Use `retries` for transient network errors
+- Use `timeout` for external API calls
+- Use `circuitBreaker` for repeatedly failing services
+- Use `onError: 'continue'` for optional operations
+- Use `shouldRetry` to avoid retrying permanent errors
+- Combine strategies for robust error handling
+</Tip>
+
+<Warning>
+Be cautious with retry + timeout combinations. Total time can be: `(timeout + retryDelay) * (retries + 1)`
+</Warning>

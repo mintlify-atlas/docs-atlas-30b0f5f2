@@ -1,0 +1,178 @@
+---
+title: Introduction
+description: A super minimal, type-safe pipeline builder for TypeScript. Built for AI SDK but works everywhere.
+---
+
+## Build pipelines that just work
+
+stepkit is a lightweight, type-safe pipeline builder designed for TypeScript developers who want to create robust data processing workflows without the complexity of heavyweight frameworks. Each step receives a typed context, returns a plain object that gets merged forward, and benefits from automatic type inference throughout the pipeline.
+
+<CardGroup cols={2}>
+  <Card
+    title="Quickstart"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Get up and running in under 2 minutes with your first pipeline
+  </Card>
+  <Card
+    title="Core Concepts"
+    icon="book"
+    href="/concepts/pipelines"
+  >
+    Learn about steps, context merging, and type safety
+  </Card>
+  <Card
+    title="Examples"
+    icon="code"
+    href="/examples/ai-workflows"
+  >
+    Real-world patterns including parallel execution, branching, and error handling
+  </Card>
+  <Card
+    title="API Reference"
+    icon="brackets-curly"
+    href="/api/stepkit"
+  >
+    Complete API documentation for all methods and types
+  </Card>
+</CardGroup>
+
+## Key Features
+
+### Type-Safe by Default
+
+Types flow automatically through each step. No manual type annotations needed—TypeScript infers the context at every step based on what previous steps return.
+
+```typescript
+const pipeline = stepkit<{ userId: string }>()
+  .step('fetch-user', ({ userId }) => ({ name: 'John', email: 'john@example.com' }))
+  .step('process', ({ name, email }) => ({ greeting: `Hello ${name}` }))
+  // TypeScript knows the full context: { userId, name, email, greeting }
+```
+
+### Parallel Execution
+
+Run multiple operations concurrently within a single step. Results are automatically merged into the context.
+
+```typescript
+const pipeline = stepkit<{ idea: string }>()
+  .step(
+    'gather-signals',
+    async ({ idea }) => ({ marketSize: await fetchMarketSize(idea) }),
+    async ({ idea }) => ({ competitors: await fetchCompetitors(idea) })
+  )
+  // Both functions run in parallel, results merge automatically
+```
+
+### Conditional Branching
+
+Route execution based on runtime conditions with full type safety across all branches.
+
+```typescript
+const pipeline = stepkit<{ content: string }>()
+  .step('classify', ({ content }) => ({ risk: classifyContent(content) }))
+  .branchOn(
+    {
+      name: 'safe',
+      when: ({ risk }) => risk === 'low',
+      then: (b) => b.step('publish', () => ({ published: true }))
+    },
+    {
+      name: 'risky',
+      default: (b) => b.step('review', () => ({ queued: true }))
+    }
+  )
+```
+
+### Composable Pipelines
+
+Nest pipelines within pipelines or import reusable sub-pipelines from other files.
+
+```typescript
+import { sessionPipeline } from './auth'
+
+const main = stepkit<{ sessionId: string }>()
+  .step('load-session', sessionPipeline)
+  .step('process', ({ permissions }) => ({ allowed: permissions.includes('write') }))
+```
+
+### Built-in Observability
+
+Opt-in structured logging with per-step timing, performance summaries, and detailed execution traces.
+
+```typescript
+await pipeline.run({ userId: '42' }, { log: { stopwatch: true } })
+```
+
+<Note>
+Output includes step-by-step progress, timing information, and a performance summary showing fastest/slowest steps and total execution time.
+</Note>
+
+### Error Handling & Retries
+
+Control how failures propagate with flexible error handling strategies and automatic retry logic.
+
+```typescript
+const pipeline = stepkit()
+  .step(
+    {
+      name: 'fetch-api',
+      onError: 'continue',
+      retries: 3,
+      retryDelayMs: 500,
+      shouldRetry: (err) => /timeout|429/.test(err.message)
+    },
+    async () => ({ data: await externalAPI() })
+  )
+  .step('process', ({ data }) => ({ hasData: !!data }))
+```
+
+### Checkpoints & Resume
+
+Save pipeline state at any step and resume execution later—perfect for human-in-the-loop workflows.
+
+```typescript
+let checkpoint = ''
+await pipeline.run(
+  { draft: 'email content' },
+  {
+    onStepComplete: (e) => {
+      if (e.stepName === 'generate-draft') {
+        checkpoint = e.checkpoint
+        e.stopPipeline() // Pause for approval
+      }
+    }
+  }
+)
+
+// Later, after approval:
+await pipeline.runCheckpoint({ checkpoint })
+```
+
+### Zero Dependencies
+
+stepkit has no external dependencies. The entire library is minimal, focused, and easy to understand. You can read the source code in minutes.
+
+## Why stepkit?
+
+Most pipeline frameworks bring heavy abstractions, complex configuration, or tight coupling to specific platforms. stepkit takes a different approach:
+
+- **Minimal API surface**: Just `step`, `branchOn`, `transform`, `run`, and `runCheckpoint`
+- **TypeScript-first**: Types are not an afterthought—they're the foundation
+- **Framework-agnostic**: Works in Node.js, browsers, edge runtimes, and anywhere TypeScript runs
+- **Composable by design**: Small, focused pipelines combine into larger workflows
+- **Observable by default**: Structured logging and timing built in, enabled with one flag
+
+Built as a lightweight alternative to complex orchestration frameworks, stepkit gives you just enough structure to build reliable pipelines without ceremony.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first pipeline in 2 minutes
+  </Card>
+  <Card title="Core Concepts" icon="book" href="/concepts/pipelines">
+    Understand how stepkit works
+  </Card>
+</CardGroup>

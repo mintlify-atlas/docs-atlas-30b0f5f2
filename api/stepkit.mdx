@@ -1,0 +1,182 @@
+---
+title: stepkit()
+description: Factory function for creating a new pipeline builder
+---
+
+The `stepkit()` function is the entry point for creating a new pipeline. It returns a `StepkitBuilder` instance that you can chain with `.step()`, `.branchOn()`, `.transform()`, and other methods to build your workflow.
+
+## Signature
+
+```typescript
+stepkit<TInput extends Record<string, unknown> = {}>(
+  config?: PipelineConfig<TInput, StepNames<StepkitBuilder<TInput, TInput, any>>>
+): StepkitBuilder<TInput, TInput>
+```
+
+## Parameters
+
+<ParamField path="config" type="PipelineConfig<TInput, StepNames>" optional>
+  Optional pipeline configuration object.
+
+  <Expandable title="properties">
+    <ParamField path="log" type="boolean | LogConfig" optional>
+      Enable/disable logging or provide custom log configuration.
+      
+      <Expandable title="LogConfig properties">
+        <ParamField path="logFn" type="(message: string, ...args: unknown[]) => void" optional>
+          Custom logging function (defaults to `console.log`).
+        </ParamField>
+        <ParamField path="errorLogFn" type="(message: string, ...args: unknown[]) => void" optional>
+          Custom error logging function (defaults to `console.error`).
+        </ParamField>
+        <ParamField path="stopwatch" type="boolean | StopwatchConfig" optional>
+          Enable performance timing and statistics.
+          
+          <Expandable title="StopwatchConfig properties">
+            <ParamField path="showStepDuration" type="boolean" default="true">
+              Show duration for each step.
+            </ParamField>
+            <ParamField path="showSummary" type="boolean" default="true">
+              Show performance summary table.
+            </ParamField>
+            <ParamField path="showTotal" type="boolean" default="true">
+              Show total pipeline duration.
+            </ParamField>
+          </Expandable>
+        </ParamField>
+      </Expandable>
+    </ParamField>
+
+    <ParamField path="onStepComplete" type="(event: StepCompleteEvent<TCtx, TStepName>) => void | Promise<void>" optional>
+      Callback invoked after each step completes successfully.
+      
+      <Expandable title="StepCompleteEvent properties">
+        <ParamField path="stepName" type="string">
+          Name of the completed step.
+        </ParamField>
+        <ParamField path="duration" type="number">
+          Execution time in milliseconds.
+        </ParamField>
+        <ParamField path="context" type="TCtx">
+          Current pipeline context after the step.
+        </ParamField>
+        <ParamField path="checkpoint" type="string">
+          Serialized checkpoint for resuming from this step.
+        </ParamField>
+        <ParamField path="stopPipeline" type="() => void">
+          Function to stop the pipeline early.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+
+    <ParamField path="onError" type="(stepName: string, error: Error) => void" optional>
+      Callback invoked when a step encounters an error.
+    </ParamField>
+
+    <ParamField path="signal" type="AbortSignal" optional>
+      AbortSignal for canceling the pipeline execution.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Type Parameters
+
+<ParamField path="TInput" type="Record<string, unknown>" default="{}">
+  The shape of the initial input context. Define this to get type-safe access to input properties in your first step.
+</ParamField>
+
+## Returns
+
+<ResponseField name="StepkitBuilder" type="StepkitBuilder<TInput, TInput>">
+  A new pipeline builder instance with the specified input type.
+</ResponseField>
+
+## Examples
+
+### Basic Pipeline
+
+```typescript
+import { stepkit } from 'stepkit'
+
+const pipeline = stepkit()
+  .step(async () => ({ message: 'Hello, world!' }))
+  .step(async ({ message }) => {
+    console.log(message)
+  })
+
+await pipeline.run({})
+```
+
+### Typed Input Context
+
+```typescript
+type Input = {
+  userId: string
+  apiKey: string
+}
+
+const pipeline = stepkit<Input>()
+  .step(async ({ userId, apiKey }) => {
+    // userId and apiKey are type-safe
+    const user = await fetchUser(userId, apiKey)
+    return { user }
+  })
+
+await pipeline.run({ 
+  userId: '123', 
+  apiKey: 'secret' 
+})
+```
+
+### With Configuration
+
+```typescript
+const pipeline = stepkit({
+  log: {
+    logFn: (msg) => console.log(`[Pipeline] ${msg}`),
+    stopwatch: {
+      showStepDuration: true,
+      showSummary: true,
+      showTotal: true
+    }
+  },
+  onStepComplete: async ({ stepName, duration, checkpoint }) => {
+    console.log(`Step ${stepName} completed in ${duration}ms`)
+    await saveCheckpoint(checkpoint)
+  },
+  onError: (stepName, error) => {
+    console.error(`Step ${stepName} failed:`, error)
+  }
+})
+
+await pipeline.run({})
+```
+
+### With Abort Signal
+
+```typescript
+const controller = new AbortController()
+
+const pipeline = stepkit({ signal: controller.signal })
+  .step(async () => {
+    // Long-running operation
+  })
+
+// Cancel after 5 seconds
+setTimeout(() => controller.abort(), 5000)
+
+try {
+  await pipeline.run({})
+} catch (error) {
+  if (error.message === 'Pipeline aborted') {
+    console.log('Pipeline was cancelled')
+  }
+}
+```
+
+## See Also
+
+- [.step()](/api/step) - Add execution steps to the pipeline
+- [.branchOn()](/api/branch-on) - Add conditional branching logic
+- [.transform()](/api/transform) - Replace the entire context
+- [.run()](/api/run) - Execute the pipeline

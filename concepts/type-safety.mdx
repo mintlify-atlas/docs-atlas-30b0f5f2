@@ -1,0 +1,493 @@
+---
+title: 'Type Safety'
+description: 'TypeScript type inference and safety features in stepkit'
+---
+
+## Automatic Type Inference
+
+Stepkit provides full TypeScript type safety with automatic type inference. As you add steps, the context type grows automatically:
+
+```typescript
+import { stepkit } from 'stepkit'
+
+const pipeline = stepkit<{ userId: string }>()
+  .step('fetch-user', ({ userId }) => {
+    // TypeScript knows userId is a string
+    return { userName: 'John Doe', age: 30 }
+  })
+  .step('fetch-settings', ({ userId, userName, age }) => {
+    // TypeScript knows all three properties and their types
+    //                 ^string  ^string    ^number
+    return { theme: 'dark', language: 'en' }
+  })
+```
+
+No manual type annotations needed - TypeScript infers everything!
+
+## Input Type Definition
+
+Define your initial input type with `stepkit<T>()`:
+
+```typescript
+interface UserInput {
+  userId: string
+  tenantId: string
+}
+
+const pipeline = stepkit<UserInput>()
+  .step('validate', ({ userId, tenantId }) => {
+    // Both properties are required and typed
+    return { valid: true }
+  })
+
+// TypeScript enforces the input type
+await pipeline.run({ userId: '123', tenantId: 'abc' })  // ✅
+await pipeline.run({ userId: '123' })  // ❌ Error: missing tenantId
+```
+
+## Context Type Evolution
+
+The context type evolves as steps add properties:
+
+```typescript
+const pipeline = stepkit<{ a: number }>()
+  .step('step1', ({ a }) => ({ b: 'hello' }))
+  .step('step2', ({ a, b }) => ({ c: true }))
+  .step('step3', ({ a, b, c }) => ({ d: [1, 2, 3] }))
+
+// Type at each step:
+// After step1: { a: number, b: string }
+// After step2: { a: number, b: string, c: boolean }
+// After step3: { a: number, b: string, c: boolean, d: number[] }
+```
+
+## Return Type Inference
+
+TypeScript infers return types from step functions:
+
+```typescript
+const pipeline = stepkit<{ id: number }>()
+  .step('fetch', ({ id }) => {
+    return {
+      user: { name: 'John', email: 'john@example.com' },
+      metadata: { created: new Date() }
+    }
+  })
+  .step('process', ({ user, metadata }) => {
+    // user is typed as { name: string, email: string }
+    // metadata is typed as { created: Date }
+    return { processed: true }
+  })
+```
+
+## Optional Context with Conditions
+
+When steps have conditions, their outputs become optional in the type system:
+
+```typescript
+const pipeline = stepkit<{ isPremium: boolean }>()
+  .step('init', () => ({ base: 'data' }))
+  .step(
+    {
+      name: 'premium-features',
+      condition: ({ isPremium }) => isPremium
+    },
+    () => ({ features: ['a', 'b', 'c'] })
+  )
+  .step('use-features', ({ features }) => {
+    // TypeScript knows features is: string[] | undefined
+    const count = features?.length ?? 0
+    return { featureCount: count }
+  })
+```
+
+### Type Evolution with Conditions
+
+```typescript
+type Step1Context = { isPremium: boolean, base: string }
+type Step2Context = { isPremium: boolean, base: string, features?: string[] }
+type Step3Context = { isPremium: boolean, base: string, features?: string[], featureCount: number }
+```
+
+## Optional Context with Error Handling
+
+Steps with `onError: 'continue'` or `onError: 'skip-remaining'` have optional outputs:
+
+```typescript
+const pipeline = stepkit<{ shouldFail: boolean }>()
+  .step('safe', () => ({ value: 1 }))
+  .step(
+    { name: 'risky', onError: 'continue' },
+    ({ shouldFail }) => {
+      if (shouldFail) throw new Error('Failed')
+      return { result: 'success' }
+    }
+  )
+  .step('handle', ({ result }) => {
+    // TypeScript knows result is: string | undefined
+    return { final: result ?? 'fallback' }
+  })
+```
+
+From source code (types.ts:60-71):
+
+```typescript
+export type MakeErrorHandlingOutputOptional<TConfig, TOutput> = TConfig extends {
+  onError: infer H
+}
+  ? H extends 'continue' | 'skip-remaining'
+    ? Partial<TOutput>
+    : TConfig extends { timeout: number }
+      ? Partial<TOutput>
+      : TOutput
+  : TConfig extends { timeout: number }
+    ? Partial<TOutput>
+    : TOutput
+```
+
+## Optional Context with Timeouts
+
+Steps with timeouts also have optional outputs:
+
+```typescript
+const pipeline = stepkit<{ delay: number }>()
+  .step('init', () => ({ started: true }))
+  .step(
+    { name: 'slow', timeout: 100, onError: 'continue' },
+    async ({ delay }) => {
+      await new Promise(r => setTimeout(r, delay))
+      return { completed: 'yes' }
+    }
+  )
+  .step('check', ({ completed }) => {
+    // TypeScript knows completed is: string | undefined
+    return { status: completed ?? 'timeout' }
+  })
+```
+
+## Transform Type Safety
+
+Transforms completely replace the context type:
+
+```typescript
+const pipeline = stepkit<{ rawData: string }>()
+  .step('parse', ({ rawData }) => {
+    return { parsed: JSON.parse(rawData), extra: 'data' }
+  })
+  .transform('reshape', ({ parsed }) => ({
+    id: parsed.id as string,
+    name: parsed.name as string
+  }))
+  .step('use', ({ id, name }) => {
+    // Only id and name are available
+    // rawData, parsed, extra are not accessible
+    // @ts-expect-error
+    console.log(rawData)  // Error!
+    return { done: true }
+  })
+```
+
+### Conditional Transform
+
+Transforms with conditions create union types:
+
+```typescript
+const pipeline = stepkit<{ value: number }>()
+  .step('double', ({ value }) => ({ doubled: value * 2 }))
+  .transform(
+    { name: 'reshape', condition: ({ doubled }) => doubled > 5 },
+    ({ doubled }) => ({ result: doubled * 10 })
+  )
+  .step('after', ({ doubled, result }) => {
+    // When condition is true: { result: number }
+    // When condition is false: { doubled: number }
+    // TypeScript sees: { doubled?: number, result?: number }
+    return { final: (doubled ?? 0) + (result ?? 0) }
+  })
+```
+
+From source code (types.ts:86-99):
+
+```typescript
+export type TransformResultContext<TPrev, TNew, TConfig> =
+  HasKey<TConfig, 'condition'> extends true
+    ? Partial<TPrev> & Partial<TNew>
+    : HasKey<TConfig, 'onError'> extends true
+      ? TConfig extends { onError: infer H }
+        ? H extends 'continue' | 'skip-remaining'
+          ? Partial<TPrev> & Partial<TNew>
+          : HasKey<TConfig, 'timeout'> extends true
+            ? Partial<TPrev> & Partial<TNew>
+            : TNew
+        : TNew
+      : HasKey<TConfig, 'timeout'> extends true
+        ? Partial<TPrev> & Partial<TNew>
+        : TNew
+```
+
+## Branch Type Safety
+
+Branches merge new keys with optional types:
+
+```typescript
+const pipeline = stepkit<{ plan: string }>()
+  .step('init', () => ({ initialized: true }))
+  .branchOn(
+    {
+      when: ({ plan }) => plan === 'premium',
+      then: (builder) => builder.step('premium', () => ({ features: ['a', 'b'] }))
+    },
+    {
+      default: (builder) => builder.step('basic', () => ({ features: ['c'] }))
+    }
+  )
+  .step('after', ({ features }) => {
+    // TypeScript knows features is: string[] | undefined
+    // (optional because it comes from a branch)
+    return { count: features?.length ?? 0 }
+  })
+```
+
+### Multiple Branch Outputs
+
+When branches return different keys, all become optional:
+
+```typescript
+const pipeline = stepkit<{ type: string }>()
+  .branchOn(
+    {
+      when: ({ type }) => type === 'A',
+      then: (builder) => builder.step('a', () => ({ resultA: 'A' }))
+    },
+    {
+      when: ({ type }) => type === 'B',
+      then: (builder) => builder.step('b', () => ({ resultB: 'B' }))
+    },
+    {
+      default: (builder) => builder.step('c', () => ({ resultC: 'C' }))
+    }
+  )
+  .step('after', ({ resultA, resultB, resultC }) => {
+    // All are optional: string | undefined
+    return {
+      result: resultA ?? resultB ?? resultC ?? 'unknown'
+    }
+  })
+```
+
+## Extracting Types
+
+Stepkit provides utility types to extract step information:
+
+### StepNames
+
+Extract all step names as a union type:
+
+```typescript
+import { type StepNames } from 'stepkit'
+
+const pipeline = stepkit()
+  .step('fetch-user', () => ({ name: 'John' }))
+  .step('process', () => ({ result: 'done' }))
+
+type Names = StepNames<typeof pipeline>
+// Names = 'fetch-user' | 'process'
+```
+
+### StepInput
+
+Get the context available to a specific step:
+
+```typescript
+import { type StepInput } from 'stepkit'
+
+const pipeline = stepkit<{ id: string }>()
+  .step('fetch-user', ({ id }) => ({ name: 'John' }))
+  .step('process', ({ name }) => ({ result: 'done' }))
+
+type ProcessInput = StepInput<typeof pipeline, 'process'>
+// ProcessInput = { id: string, name: string }
+```
+
+### StepOutput
+
+Get the context after a step (or final context):
+
+```typescript
+import { type StepOutput } from 'stepkit'
+
+const pipeline = stepkit<{ id: string }>()
+  .step('fetch-user', ({ id }) => ({ name: 'John' }))
+  .step('process', ({ name }) => ({ result: 'done' }))
+
+type AfterFetch = StepOutput<typeof pipeline, 'fetch-user'>
+// AfterFetch = { id: string, name: string }
+
+type FinalOutput = StepOutput<typeof pipeline>
+// FinalOutput = { id: string, name: string, result: string }
+```
+
+## Advanced: Union to Intersection
+
+When merging parallel step outputs, stepkit uses `UnionToIntersection`:
+
+```typescript
+const pipeline = stepkit<{ id: string }>()
+  .step(
+    'parallel',
+    () => ({ a: 1 }),
+    () => ({ b: 'hello' }),
+    () => ({ c: true })
+  )
+  .step('use', ({ a, b, c }) => {
+    // a: number, b: string, c: boolean
+    return { combined: `${a}-${b}-${c}` }
+  })
+```
+
+From source code (types.ts:1-9):
+
+```typescript
+export type UnionToIntersection<U> = (U extends unknown ? (k: U) => void : never) extends (
+  k: infer I
+) => void
+  ? I
+  : never
+
+export type MergeOutputs<TOutputs extends readonly unknown[]> = UnionToIntersection<
+  TOutputs[number]
+>
+```
+
+## Type History Tracking
+
+Stepkit tracks type history internally for advanced type operations:
+
+```typescript
+export type StepHistoryRecord<TName extends string, TCtx> = {
+  name: TName
+  ctx: TCtx
+}
+
+export type AppendHistory<
+  THistory extends readonly StepHistoryRecord<string, unknown>[],
+  TName extends string,
+  TCtx
+> = [...THistory, StepHistoryRecord<TName, TCtx>]
+```
+
+This enables features like `StepInput` and `StepOutput` to look up context at any point in the pipeline.
+
+## Void Returns
+
+Steps can return `void` for side effects. TypeScript treats this as an empty object:
+
+```typescript
+const pipeline = stepkit<{ userId: string }>()
+  .step('log', ({ userId }) => {
+    console.log('User:', userId)
+    // No return - treated as {}
+  })
+  .step('fetch', ({ userId }) => {
+    // userId still available
+    return { name: 'John' }
+  })
+```
+
+From source code (types.ts:21-24):
+
+```typescript
+export type StepFunction<TContext, TOutput extends Record<string, unknown>> = (
+  context: TContext
+) => TOutput | Promise<TOutput> | void | Promise<void>
+```
+
+## Generic Constraints
+
+Stepkit enforces that context is always a record:
+
+```typescript
+// ✅ Valid
+stepkit<{ userId: string }>()
+
+// ✅ Valid
+stepkit<Record<string, unknown>>()
+
+// ❌ Invalid - not a record type
+stepkit<string>()
+stepkit<number>()
+```
+
+## Type-Safe Configuration
+
+Step configuration is fully typed:
+
+```typescript
+const pipeline = stepkit<{ shouldRun: boolean }>()
+  .step(
+    {
+      name: 'configured-step',
+      condition: ({ shouldRun }) => shouldRun,  // Typed context
+      onError: 'continue',  // Union type: 'throw' | 'continue' | 'skip-remaining'
+      timeout: 5000,  // number
+      retries: 3,  // number
+      retryDelayMs: (attempt, error) => {  // Typed parameters
+        // attempt: number, error: Error
+        return Math.pow(2, attempt) * 1000
+      },
+      shouldRetry: (error) => {  // error: Error
+        return error.message.includes('timeout')
+      },
+      mergePolicy: 'override',  // Union: 'override' | 'error' | 'warn' | 'skip'
+      log: true,  // boolean
+      parallelMode: 'all'  // Union: 'all' | 'settled'
+    },
+    ({ shouldRun }) => ({ result: 'done' })
+  )
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Always Type Input" icon="keyboard">
+    Provide an input type to `stepkit<T>()` for maximum type safety:
+    
+    ```typescript
+    stepkit<{ userId: string }>()
+    ```
+  </Card>
+  
+  <Card title="Let TypeScript Infer" icon="wand-magic-sparkles">
+    Don't manually type step returns - let TypeScript infer:
+    
+    ```typescript
+    // Good
+    .step('fetch', () => ({ name: 'John' }))
+    
+    // Unnecessary
+    .step('fetch', (): { name: string } => ({ name: 'John' }))
+    ```
+  </Card>
+  
+  <Card title="Handle Optional Context" icon="shield-check">
+    When using conditions or error handling, check for undefined:
+    
+    ```typescript
+    .step('use', ({ maybeValue }) => ({
+      result: maybeValue ?? 'default'
+    }))
+    ```
+  </Card>
+  
+  <Card title="Use Type Utilities" icon="screwdriver-wrench">
+    Extract types with `StepNames`, `StepInput`, `StepOutput`:
+    
+    ```typescript
+    type Input = StepInput<typeof pipeline, 'process'>
+    ```
+  </Card>
+</CardGroup>
+
+<Note>
+  TypeScript version 4.7+ is recommended for best type inference. Earlier versions may require more manual type annotations.
+</Note>

@@ -1,0 +1,303 @@
+---
+title: Type Helpers
+description: TypeScript utilities for extracting type information from stepkit pipelines
+---
+
+Stepkit provides type helpers that extract and infer types from your pipeline builders, enabling type-safe interactions with pipeline steps and checkpoints.
+
+## StepNames\<T\>
+
+Extract all step names from a pipeline builder as a string union type. Only works with explicitly named steps (not anonymous steps).
+
+```typescript
+export type StepNames<TBuilder> = TBuilder extends {
+  __history: readonly (infer TRecord)[]
+}
+  ? TRecord extends { name: infer TName }
+    ? TName extends string
+      ? string extends TName
+        ? never
+        : TName
+      : never
+    : never
+  : never
+```
+
+### Usage
+
+Use `StepNames` to get a type-safe union of all step names in your pipeline:
+
+```typescript
+const pipeline = stepkit()
+  .step('fetch-user', () => ({ name: 'John' }))
+  .step('process', () => ({ result: 'done' }))
+  .step('notify', () => ({ sent: true }))
+
+type Names = StepNames<typeof pipeline>
+// 'fetch-user' | 'process' | 'notify'
+
+// Use it to ensure step names are valid
+function getStepInfo(stepName: Names) {
+  // Only accepts: 'fetch-user', 'process', or 'notify'
+  console.log(`Step: ${stepName}`)
+}
+```
+
+## StepInput\<T, Name\>
+
+Get the input context available to a specific named step. This is the context as it exists when the step begins execution.
+
+```typescript
+export type StepInput<TBuilder, TName extends StepNames<TBuilder>> = TBuilder extends {
+  __history: readonly (infer TRecord)[]
+}
+  ? Extract<TRecord, { name: TName }> extends { ctx: infer TCtx }
+    ? TCtx
+    : never
+  : never
+```
+
+### Usage
+
+Use `StepInput` to get the type of the context available to a specific step:
+
+```typescript
+const pipeline = stepkit<{ id: string }>()
+  .step('fetch-user', ({ id }) => ({ name: 'John' }))
+  .step('process', ({ id, name }) => ({ result: 'done' }))
+  .step('notify', ({ id, name, result }) => ({ sent: true }))
+
+type FetchInput = StepInput<typeof pipeline, 'fetch-user'>
+// { id: string }
+
+type ProcessInput = StepInput<typeof pipeline, 'process'>
+// { id: string; name: string }
+
+type NotifyInput = StepInput<typeof pipeline, 'notify'>
+// { id: string; name: string; result: string }
+
+// Use it to validate function signatures
+function mockFetchUser(ctx: FetchInput) {
+  return { name: 'Mock User' }
+}
+```
+
+## StepOutput\<T, Name\>
+
+Get the output context from a pipeline. Without a step name, returns the final context after all steps. With a step name, returns the context after the named step completes (or the final context if it's the last step).
+
+```typescript
+export type StepOutput<TBuilder, TName extends StepNames<TBuilder> | never = never> = [
+  TName
+] extends [never]
+  ? BuilderFinalContext<TBuilder>
+  : LookupAfterCtx<
+      StepAfterCtxMap<BuilderHistory<TBuilder>, BuilderFinalContext<TBuilder>>,
+      Extract<TName, string>,
+      BuilderFinalContext<TBuilder>
+    >
+```
+
+### Usage
+
+Use `StepOutput` to get the final output type or the context after a specific step:
+
+```typescript
+const pipeline = stepkit<{ id: string }>()
+  .step('fetch-user', ({ id }) => ({ name: 'John' }))
+  .step('process', ({ name }) => ({ result: 'done' }))
+  .step('notify', ({ result }) => ({ sent: true }))
+
+// Get final output (no step name)
+type FinalOutput = StepOutput<typeof pipeline>
+// { id: string; name: string; result: string; sent: boolean }
+
+// Get context after a specific step
+type AfterFetch = StepOutput<typeof pipeline, 'fetch-user'>
+// { id: string; name: string }
+
+type AfterProcess = StepOutput<typeof pipeline, 'process'>
+// { id: string; name: string; result: string }
+
+// Use it for type-safe result handling
+async function runAndValidate(): Promise<FinalOutput> {
+  const result = await pipeline.run({ id: '123' })
+  return result
+}
+```
+
+## Checkpoint Helpers
+
+Stepkit provides utilities for serializing and deserializing checkpoints, enabling pipeline resumption.
+
+### Checkpoint\<T\>
+
+The checkpoint type represents a saved pipeline state:
+
+```typescript
+export type Checkpoint<T extends Record<string, unknown>> = {
+  stepName: string
+  output: T
+}
+```
+
+### serializeCheckpoint
+
+Serialize a checkpoint to a JSON string for storage:
+
+```typescript
+export const serializeCheckpoint = <T extends Record<string, unknown>>(
+  cp: Checkpoint<T>
+): string => JSON.stringify(cp)
+```
+
+### deserializeCheckpoint
+
+Deserialize a JSON string back into a checkpoint:
+
+```typescript
+export const deserializeCheckpoint = <T extends Record<string, unknown>>(
+  s: string
+): Checkpoint<T> => JSON.parse(s) as Checkpoint<T>
+```
+
+### Usage
+
+Use the checkpoint helpers to save and restore pipeline state:
+
+```typescript
+import { 
+  stepkit, 
+  serializeCheckpoint, 
+  deserializeCheckpoint,
+  type Checkpoint 
+} from 'stepkit'
+
+const pipeline = stepkit<{ userId: string }>()
+  .step('fetch-user', async ({ userId }) => {
+    const user = await db.getUser(userId)
+    return { user }
+  })
+  .step('process-data', async ({ user }) => {
+    const data = await processUserData(user)
+    return { data }
+  })
+  .step('send-email', async ({ user, data }) => {
+    await sendEmail(user.email, data)
+    return { sent: true }
+  })
+
+// Run with checkpoint saving
+let checkpoint: Checkpoint<any> | undefined
+
+const result = await pipeline.run(
+  { userId: '123' },
+  {
+    onStepComplete: (stepName, output) => {
+      // Save checkpoint after each step
+      checkpoint = { stepName, output }
+      const serialized = serializeCheckpoint(checkpoint)
+      await storage.save('checkpoint', serialized)
+    }
+  }
+)
+
+// Resume from checkpoint
+const savedCheckpoint = await storage.load('checkpoint')
+const restored = deserializeCheckpoint(savedCheckpoint)
+
+const resumedResult = await pipeline.run(
+  { userId: '123' },
+  {
+    resumeFrom: restored.stepName,
+    initialContext: restored.output
+  }
+)
+```
+
+### Type-Safe Checkpoints
+
+Combine checkpoints with type helpers for full type safety:
+
+```typescript
+const pipeline = stepkit<{ id: string }>()
+  .step('fetch-user', ({ id }) => ({ name: 'John' }))
+  .step('process', ({ name }) => ({ result: 'done' }))
+
+type AfterFetch = StepOutput<typeof pipeline, 'fetch-user'>
+// { id: string; name: string }
+
+// Type-safe checkpoint for a specific step
+const checkpoint: Checkpoint<AfterFetch> = {
+  stepName: 'fetch-user',
+  output: { id: '123', name: 'John' }
+}
+
+const serialized = serializeCheckpoint(checkpoint)
+const restored = deserializeCheckpoint<AfterFetch>(serialized)
+
+// TypeScript knows restored.output has the correct shape
+console.log(restored.output.name) // ✓ Type-safe
+```
+
+## Advanced Example
+
+Combine all type helpers for a fully type-safe pipeline system:
+
+```typescript
+import { 
+  stepkit, 
+  type StepNames, 
+  type StepInput, 
+  type StepOutput,
+  type Checkpoint,
+  serializeCheckpoint,
+  deserializeCheckpoint
+} from 'stepkit'
+
+const pipeline = stepkit<{ orderId: string }>()
+  .step('fetch-order', async ({ orderId }) => {
+    return { order: await db.getOrder(orderId) }
+  })
+  .step('validate-payment', async ({ order }) => {
+    return { payment: await validatePayment(order) }
+  })
+  .step('ship-order', async ({ order, payment }) => {
+    return { tracking: await shipOrder(order, payment) }
+  })
+
+// Type-safe step names
+type Steps = StepNames<typeof pipeline>
+// 'fetch-order' | 'validate-payment' | 'ship-order'
+
+// Type-safe step inputs
+type ValidateInput = StepInput<typeof pipeline, 'validate-payment'>
+// { orderId: string; order: Order }
+
+// Type-safe outputs
+type FinalOutput = StepOutput<typeof pipeline>
+// { orderId: string; order: Order; payment: Payment; tracking: Tracking }
+
+type AfterValidate = StepOutput<typeof pipeline, 'validate-payment'>
+// { orderId: string; order: Order; payment: Payment }
+
+// Type-safe checkpoint handler
+async function saveCheckpoint<S extends Steps>(
+  stepName: S,
+  output: StepOutput<typeof pipeline, S>
+) {
+  const checkpoint: Checkpoint<typeof output> = { stepName, output }
+  const serialized = serializeCheckpoint(checkpoint)
+  await redis.set('pipeline-checkpoint', serialized)
+}
+
+// Run with type-safe checkpointing
+const result = await pipeline.run(
+  { orderId: 'ORD-123' },
+  {
+    onStepComplete: (stepName, output) => {
+      saveCheckpoint(stepName as Steps, output)
+    }
+  }
+)
+```

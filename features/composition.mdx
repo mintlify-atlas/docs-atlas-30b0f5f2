@@ -1,0 +1,330 @@
+---
+title: Pipeline Composition
+description: Compose and nest pipelines for modularity and reusability
+---
+
+## Overview
+
+Stepkit pipelines are composable by design. You can:
+- **Nest pipelines** as steps within other pipelines
+- **Reuse pipelines** across different contexts
+- **Branch with pipelines** using pre-built pipeline branches
+- **Chain pipelines** to build complex workflows from simple parts
+
+All composition methods maintain full type safety.
+
+## Nested Pipelines
+
+Pass a pipeline as a step to execute it within another pipeline:
+
+```typescript
+// Session sub-pipeline: load session and permissions
+const sessionPipeline = stepkit<{ sessionId: string }>()
+  .step('fetch-session', async ({ sessionId }) => ({ 
+    session: await getSession(sessionId) 
+  }))
+  .step('fetch-permissions', async ({ session }) => ({
+    permissions: await getPermissions(session.userId),
+  }))
+
+// Main pipeline composes the session pipeline and continues
+const main = stepkit<{ sessionId: string }>()
+  .step('load-session', sessionPipeline)
+  .step('use-permissions', ({ permissions }) => ({ 
+    canPublish: permissions.includes('publish') 
+  }))
+
+await main.run({ sessionId: 'abc123' })
+```
+
+### How Nested Pipelines Work
+
+1. The nested pipeline receives the current context as its input
+2. The nested pipeline executes all its steps
+3. **Only new or changed keys** from the nested pipeline are merged back into the parent context
+4. Nested step names are prefixed for typing and logging
+
+<Note>
+Nested pipelines use the wrapping step's `mergePolicy` (default: `override`) to merge their outputs into the parent context.
+</Note>
+
+## Parallel Nested Pipelines
+
+Nest multiple pipelines in parallel:
+
+```typescript
+const fetchOrders = stepkit<{ userId: string }>()
+  .step('get-orders', async ({ userId }) => ({ 
+    orders: await getOrders(userId) 
+  }))
+  .step('calculate-total', ({ orders }) => ({ 
+    orderTotal: orders.reduce((sum, o) => sum + o.amount, 0) 
+  }))
+
+const fetchAlerts = stepkit<{ userId: string }>()
+  .step('get-alerts', async ({ userId }) => ({ 
+    alerts: await getAlerts(userId) 
+  }))
+  .step('filter-unread', ({ alerts }) => ({ 
+    unreadCount: alerts.filter(a => !a.read).length 
+  }))
+
+const main = stepkit<{ userId: string }>()
+  .step('fetch-user', async ({ userId }) => ({ 
+    user: await getUser(userId) 
+  }))
+  // Run both sub-pipelines in parallel
+  .step(
+    'load-data',
+    fetchOrders,
+    fetchAlerts,
+  )
+  .step('summary', ({ user, orderTotal, unreadCount }) => ({
+    message: `${user.name} has ${orderTotal} in orders and ${unreadCount} unread alerts`,
+  }))
+
+await main.run({ userId: '123' })
+```
+
+## Reusable Pipeline Branches
+
+Use pipelines as branch targets for conditional logic:
+
+```typescript
+import { StepOutput } from 'stepkit'
+
+// Base classification pipeline
+const classify = stepkit<{ prompt: string }>()
+  .step('classify', async ({ prompt }) => {
+    const { text } = await generateText({
+      model: openai('gpt-4.1'),
+      prompt: `Is this a question or statement? One word.\n\n${prompt}`,
+    })
+    return { type: text.trim().toLowerCase() }
+  })
+
+type Classified = StepOutput<typeof classify, 'classify'>
+
+// Reusable handler pipelines
+const handleQuestion = stepkit<Classified>()
+  .step('answer', async ({ prompt }) => {
+    const { text } = await generateText({
+      model: openai('gpt-4.1'),
+      prompt: `Answer: ${prompt}`,
+    })
+    return { response: text }
+  })
+
+const handleStatement = stepkit<Classified>()
+  .step('acknowledge', () => ({ response: 'Thanks for sharing!' }))
+
+// Compose with branching
+const responder = classify
+  .branchOn(
+    'route',
+    {
+      name: 'question',
+      when: ({ type }) => type === 'question',
+      then: handleQuestion, // Use pipeline directly
+    },
+    { 
+      name: 'statement', 
+      default: handleStatement 
+    },
+  )
+  .step('finalize', ({ response }) => ({ done: true, response }))
+
+await responder.run({ prompt: 'What is AI?' })
+```
+
+## Type Helpers for Composition
+
+Stepkit provides type helpers to extract types from pipelines:
+
+### `StepNames<TBuilder>`
+
+Extract all step names from a pipeline:
+
+```typescript
+import { StepNames } from 'stepkit'
+
+const simple = stepkit<{ id: string }>()
+  .step('fetch-user', ({ id }) => ({ name: 'John', id }))
+  .step('process', ({ name }) => ({ result: name.toUpperCase() }))
+
+type Names = StepNames<typeof simple>
+// 'fetch-user' | 'process'
+```
+
+### `StepInput<TBuilder, TName>`
+
+Get the input context available to a specific step:
+
+```typescript
+import { StepInput } from 'stepkit'
+
+const pipeline = stepkit<{ id: string }>()
+  .step('fetch-user', ({ id }) => ({ name: 'John' }))
+  .step('process', ({ name }) => ({ result: 'done' }))
+
+type ProcessInput = StepInput<typeof pipeline, 'process'>
+// { id: string; name: string }
+```
+
+### `StepOutput<TBuilder, TName?>`
+
+Get the output context after a step (or the final output):
+
+```typescript
+import { StepOutput } from 'stepkit'
+
+const pipeline = stepkit<{ id: string }>()
+  .step('fetch-user', ({ id }) => ({ name: 'John', id }))
+  .step('process', ({ name }) => ({ result: name.toUpperCase() }))
+
+type AfterFetch = StepOutput<typeof pipeline, 'fetch-user'>
+// { id: string; name: string }
+
+type FinalOutput = StepOutput<typeof pipeline>
+// { id: string; name: string; result: string }
+```
+
+## Composing from Separate Files
+
+Organize large pipelines across multiple files:
+
+```typescript
+// pipelines/auth.ts
+import { stepkit } from 'stepkit'
+
+export const authenticateUser = stepkit<{ token: string }>()
+  .step('verify-token', async ({ token }) => ({
+    userId: await verifyToken(token),
+  }))
+  .step('fetch-user', async ({ userId }) => ({
+    user: await getUser(userId),
+  }))
+
+// pipelines/orders.ts
+import { stepkit } from 'stepkit'
+
+export const loadOrders = stepkit<{ user: User }>()
+  .step('fetch-orders', async ({ user }) => ({
+    orders: await getOrders(user.id),
+  }))
+  .step('enrich-orders', async ({ orders }) => ({
+    orders: await enrichOrders(orders),
+  }))
+
+// main.ts
+import { authenticateUser } from './pipelines/auth'
+import { loadOrders } from './pipelines/orders'
+
+const main = stepkit<{ token: string }>()
+  .step('auth', authenticateUser)
+  .step('load-data', loadOrders)
+  .step('format-response', ({ user, orders }) => ({
+    response: { userName: user.name, orderCount: orders.length },
+  }))
+
+await main.run({ token: 'abc123' })
+```
+
+## Nested Step Names
+
+When pipelines are nested, step names are prefixed:
+
+```typescript
+const subPipeline = stepkit<{ id: string }>()
+  .step('sub-step-1', () => ({ a: 1 }))
+  .step('sub-step-2', () => ({ b: 2 }))
+
+const main = stepkit<{ id: string }>()
+  .step('parent-step', subPipeline)
+
+type Names = StepNames<typeof main>
+// 'parent-step' | 'parent-step/sub-step-1' | 'parent-step/sub-step-2'
+```
+
+This is visible in logs:
+
+```text
+📍 Step: parent-step/sub-step-1
+✅ parent-step/sub-step-1 completed in 10ms
+   Output: a
+
+📍 Step: parent-step/sub-step-2
+✅ parent-step/sub-step-2 completed in 5ms
+   Output: b
+```
+
+## Merge Behavior
+
+Nested pipelines only merge **new or changed keys** back to the parent:
+
+```typescript
+const sub = stepkit<{ a: number }>()
+  .step('increment', ({ a }) => ({ a: a + 1 })) // modifies 'a'
+  .step('add-b', () => ({ b: 2 })) // adds 'b'
+
+const main = stepkit<{ a: number }>()
+  .step('init', () => ({ a: 0 }))
+  .step('run-sub', sub)
+  .step('check', ({ a, b }) => {
+    console.log(a, b) // 1, 2
+    return {}
+  })
+
+await main.run({})
+```
+
+## Configuration Inheritance
+
+Nested pipelines inherit runtime configuration from their parent:
+
+```typescript
+const sub = stepkit<{ id: string }>()
+  .step('sub-step', () => ({ result: 'done' }))
+
+const main = stepkit<{ id: string }>()
+  .step('parent', sub)
+
+// Logging applies to both main and sub-pipeline steps
+await main.run({ id: '1' }, { log: { stopwatch: true } })
+```
+
+## Error Handling in Nested Pipelines
+
+Errors in nested pipelines propagate to the parent:
+
+```typescript
+const sub = stepkit<{ value: number }>()
+  .step('risky', ({ value }) => {
+    if (value < 0) throw new Error('Negative value')
+    return { valid: true }
+  })
+
+const main = stepkit<{ value: number }>()
+  .step(
+    { name: 'run-sub', onError: 'continue' },
+    sub
+  )
+  .step('continue-anyway', ({ valid }) => {
+    // valid is undefined if sub failed
+    return { done: true }
+  })
+```
+
+## When to Use Composition
+
+Use pipeline composition when:
+
+- **Reusability**: The same logic is needed in multiple pipelines
+- **Modularity**: Breaking down complex workflows into manageable pieces
+- **Testing**: Testing sub-pipelines independently
+- **Organization**: Keeping related steps together across files
+- **Team collaboration**: Different team members work on different pipeline sections
+
+<Tip>
+Start with a single pipeline and extract reusable parts into separate pipelines as patterns emerge.
+</Tip>

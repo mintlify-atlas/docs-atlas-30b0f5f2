@@ -1,0 +1,312 @@
+---
+title: Conditional Branching
+description: Build dynamic pipelines with conditional logic and branching paths
+---
+
+## Overview
+
+Stepkit provides two ways to add conditional logic to pipelines:
+1. **Step-level conditions**: Skip individual steps based on context
+2. **Branch-based routing**: Execute different pipeline paths based on conditions
+
+## Step-Level Conditions
+
+Use the `condition` configuration to conditionally execute a step:
+
+<ParamField path="condition" type="boolean | (context: TContext) => boolean | Promise<boolean>">
+  If `false` or the function returns `false`, the step is skipped. Can be a boolean value or a function that receives the current context.
+</ParamField>
+
+### Static Condition
+
+```typescript
+const pipeline = stepkit<{ debug: boolean }>()
+  .step({ name: 'log-debug', condition: false }, () => {
+    console.log('This never runs')
+    return {}
+  })
+```
+
+### Dynamic Condition
+
+```typescript
+const pipeline = stepkit<{ idea: string }>()
+  .step('gather-market-signals', async ({ idea }) => ({
+    marketSize: await fetchMarketSize(idea)
+  }))
+  .step(
+    { 
+      name: 'run-forecast', 
+      condition: ({ marketSize }) => marketSize === 'large' 
+    },
+    async ({ idea }) => ({ forecast: await forecastROI(idea) }),
+  )
+  .step('evaluate', async ({ idea, marketSize, forecast }) => {
+    // forecast is typed as optional because the step has a condition
+    const { text } = await generateText({
+      model: openai('gpt-4.1'),
+      prompt: `Rate this idea: "${idea}"\nMarket: ${marketSize}\nForecast: ${forecast ?? 'n/a'}`,
+    })
+    return { evaluation: text }
+  })
+```
+
+<Note>
+When a step has a `condition`, its outputs are typed as optional (`Partial<T>`) in downstream steps, since the step might be skipped.
+</Note>
+
+## Branch-Based Routing
+
+The `branchOn()` method creates mutually exclusive execution paths based on conditions:
+
+```typescript
+.branchOn(
+  name?, // optional branch name
+  ...cases // branch cases with when/then or default
+)
+```
+
+### Basic Branching
+
+```typescript
+const pipeline = stepkit<{ content: string; userId: string }>()
+  .step('classify-content', async ({ content }) => {
+    const { text } = await generateText({
+      model: openai('gpt-4.1'),
+      prompt: `Classify content as safe, suspicious, or dangerous.\n\n${content}`,
+    })
+    return { riskLevel: text.trim().toLowerCase() as 'safe' | 'suspicious' | 'dangerous' }
+  })
+  .branchOn(
+    'policy-route',
+    {
+      name: 'safe',
+      when: ({ riskLevel }) => riskLevel === 'safe',
+      then: (b) => b.step('publish', async () => ({ action: 'published' as const })),
+    },
+    {
+      name: 'suspicious',
+      when: ({ riskLevel }) => riskLevel === 'suspicious',
+      then: (b) =>
+        b
+          .step('queue-review', async () => ({ 
+            reviewTicketId: await createReviewTicket() 
+          }))
+          .step('notify-moderators', async ({ reviewTicketId }) => ({
+            moderatorNotified: await notifyModerators(reviewTicketId),
+          }))
+          .step('hold', () => ({ action: 'held-for-review' as const })),
+    },
+    {
+      name: 'dangerous',
+      default: (b) =>
+        b
+          .step('block-user', async ({ userId }) => ({ 
+            blocked: await blockUser(userId) 
+          }))
+          .step('send-user-email', async ({ blocked }) => ({
+            userMessaged: blocked ? await sendUserEmail('Your content was blocked') : false,
+          }))
+          .step('notify-admin', async () => ({ adminNotified: await notifyAdmin() }))
+          .step('finalize', () => ({ action: 'blocked' as const })),
+    },
+  )
+```
+
+### Branch Cases
+
+Each branch case can have:
+
+<ParamField path="name" type="string" required={false}>
+  Optional name for the branch case (used in logging and step names)
+</ParamField>
+
+<ParamField path="when" type="(context: TContext) => boolean | Promise<boolean>">
+  Condition function that determines if this branch should execute
+</ParamField>
+
+<ParamField path="then" type="StepkitBuilder | (builder: StepkitBuilder) => StepkitBuilder">
+  The pipeline to execute if the condition matches. Can be a pre-built pipeline or a builder function.
+</ParamField>
+
+<ParamField path="default" type="StepkitBuilder | (builder: StepkitBuilder) => StepkitBuilder">
+  The default branch to execute if no other conditions match. Only one case can have `default`.
+</ParamField>
+
+### Branch Evaluation Order
+
+- Cases are evaluated in order
+- The first case where `when()` returns `true` is executed
+- If no conditions match, the `default` case is executed (if provided)
+- If no conditions match and there's no default, the branch is skipped
+
+```typescript
+const pipeline = stepkit<{ score: number }>()
+  .branchOn(
+    'route',
+    {
+      name: 'excellent',
+      when: ({ score }) => score >= 90,
+      then: (b) => b.step('reward', () => ({ badge: 'gold' })),
+    },
+    {
+      name: 'good',
+      when: ({ score }) => score >= 70, // only checked if score < 90
+      then: (b) => b.step('reward', () => ({ badge: 'silver' })),
+    },
+    {
+      name: 'needs-improvement',
+      default: (b) => b.step('encourage', () => ({ badge: 'bronze' })),
+    },
+  )
+```
+
+## Reusable Branch Pipelines
+
+Define branch pipelines separately for reusability:
+
+```typescript
+import { StepOutput } from 'stepkit'
+
+// Classify input
+const classify = stepkit<{ prompt: string }>()
+  .step('classify', async ({ prompt }) => {
+    const { text } = await generateText({
+      model: openai('gpt-4.1'),
+      prompt: `Is this a question or statement? One word.\n\n${prompt}`,
+    })
+    return { type: text.trim().toLowerCase() }
+  })
+
+// Extract type for reusable branches
+type Classified = StepOutput<typeof classify, 'classify'>
+
+// Reusable pipelines
+const handleQuestion = stepkit<Classified>()
+  .step('answer', async ({ prompt }) => {
+    const { text } = await generateText({
+      model: openai('gpt-4.1'),
+      prompt: `Answer: ${prompt}`,
+    })
+    return { response: text }
+  })
+
+const handleStatement = stepkit<Classified>()
+  .step('acknowledge', () => ({ response: 'Thanks for sharing!' }))
+
+// Compose with full type safety
+const responder = classify
+  .branchOn(
+    'route',
+    {
+      name: 'question',
+      when: ({ type }) => type === 'question',
+      then: handleQuestion,
+    },
+    { 
+      name: 'statement', 
+      default: handleStatement 
+    },
+  )
+  .step('finalize', ({ response }) => ({ done: true, response }))
+
+await responder.run({ prompt: 'What is AI?' })
+```
+
+## Branch Configuration
+
+Branches support the same configuration options as regular steps:
+
+```typescript
+const pipeline = stepkit<{ value: number }>()
+  .branchOn(
+    {
+      name: 'route',
+      timeout: 5000,
+      onError: 'continue',
+      log: true,
+    },
+    {
+      when: ({ value }) => value > 0,
+      then: (b) => b.step('process-positive', () => ({ result: 'positive' })),
+    },
+    {
+      default: (b) => b.step('process-negative', () => ({ result: 'negative' })),
+    },
+  )
+```
+
+## Type Safety
+
+Branch outputs are properly typed. Since only one branch executes, outputs from all branches are typed as optional:
+
+```typescript
+const pipeline = stepkit<{ type: 'a' | 'b' }>()
+  .branchOn(
+    'route',
+    {
+      name: 'type-a',
+      when: ({ type }) => type === 'a',
+      then: (b) => b.step('handle-a', () => ({ resultA: 'A' })),
+    },
+    {
+      name: 'type-b',
+      when: ({ type }) => type === 'b',
+      then: (b) => b.step('handle-b', () => ({ resultB: 'B' })),
+    },
+  )
+  .step('use-result', ({ resultA, resultB }) => {
+    // Both are typed as optional: string | undefined
+    return { result: resultA ?? resultB ?? 'unknown' }
+  })
+```
+
+## Nested Branches
+
+You can nest branches within branches:
+
+```typescript
+const pipeline = stepkit<{ category: string; priority: string }>()
+  .branchOn(
+    'category-route',
+    {
+      name: 'important',
+      when: ({ category }) => category === 'important',
+      then: (b) =>
+        b.branchOn(
+          'priority-route',
+          {
+            name: 'urgent',
+            when: ({ priority }) => priority === 'urgent',
+            then: (bb) => bb.step('urgent-handler', () => ({ handled: 'urgent-important' })),
+          },
+          {
+            name: 'normal',
+            default: (bb) => bb.step('normal-handler', () => ({ handled: 'normal-important' })),
+          },
+        ),
+    },
+    {
+      name: 'routine',
+      default: (b) => b.step('routine-handler', () => ({ handled: 'routine' })),
+    },
+  )
+```
+
+## Logging
+
+When logging is enabled, branch execution is clearly indicated:
+
+```typescript
+await pipeline.run({ type: 'question' }, { log: { stopwatch: true } })
+```
+
+Output:
+```text
+🔀 Branch: route
+   ↳ Executing: question
+
+📍 Step: route/question/answer
+✅ route/question/answer completed in 250ms
+   Output: response
+```

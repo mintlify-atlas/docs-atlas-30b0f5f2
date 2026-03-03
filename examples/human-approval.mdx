@@ -1,0 +1,224 @@
+---
+title: 'Human Approval'
+description: 'Building workflows that pause for human review and resume later'
+icon: 'user-check'
+---
+
+## Overview
+
+Stepkit supports checkpoint-based workflows that can pause at any step, store their state, and resume later. This is perfect for human-in-the-loop workflows like approval systems, review queues, or multi-stage processes.
+
+## How Checkpoints Work
+
+Checkpoints capture the complete state of a pipeline at a specific step, including:
+- All context data accumulated so far
+- The pipeline structure and remaining steps
+- The exact position in the execution
+
+You can serialize checkpoints to a database, then resume from that exact point with optional data overrides.
+
+## Basic Checkpoint Usage
+
+Checkpoints are emitted via the `onStepComplete` callback during pipeline execution.
+
+<CodeGroup>
+```typescript checkpoints.ts
+import { stepkit } from 'stepkit'
+
+const calc = stepkit<{ a: number; b?: number }>()
+  .step('add-one', ({ a }) => ({ a: a + 1 }))
+  .step('double', ({ a }) => ({ a: a * 2 }))
+  .step('finish', ({ a, b }) => ({ sum: (a ?? 0) + (b ?? 0) }))
+
+let checkpoint = ''
+await calc.run(
+  { a: 1 },
+  {
+    onStepComplete: (e) => {
+      if (e.stepName === 'double') checkpoint = e.checkpoint
+    },
+  },
+)
+
+// Resume later with an override
+const resumed = await calc.runCheckpoint({ checkpoint, overrideData: { b: 10 } })
+```
+</CodeGroup>
+
+<Note>
+Checkpoints are Base64-encoded strings containing the serialized pipeline state. Store them in a database, cache, or queue system.
+</Note>
+
+## Human Approval Flow
+
+This example shows a complete approval workflow where an AI generates a draft email, pauses for human approval, then sends it when approved.
+
+<CodeGroup>
+```typescript approval.ts
+import { stepkit } from 'stepkit'
+
+// Mocks
+const kv: Record<string, string> = {}
+const save = async (id: string, cp: string) => (kv[id] = cp)
+const get = async (id: string) => kv[id] ?? null
+const del = async (id: string) => { delete kv[id] }
+const sendEmail = async ({ to, body }: { to: string; body: string }) => {
+  console.log('Sending email to', to, 'with body:', body)
+}
+
+const replyFlow = stepkit<{ body: string }>()
+  .step('generate', async ({ body }) => ({ reply: `Reply: ${body}` }))
+  .step('send', async ({ reply }) => {
+    await sendEmail({ to: 'user@example.com', body: reply })
+  })
+
+export const start = async (body: string) => {
+  let approvalId: string | null = null
+  await replyFlow.run(
+    { body },
+    {
+      async onStepComplete(e) {
+        if (e.stepName.endsWith('generate')) {
+          approvalId = `apr_${Date.now()}`
+          await save(approvalId, e.checkpoint)
+          e.stopPipeline()
+        }
+      },
+    },
+  )
+  return { approvalId }
+}
+
+export const approve = async (approvalId: string) => {
+  const checkpoint = await get(approvalId)
+  if (!checkpoint) throw new Error('Not found')
+  await replyFlow.runCheckpoint(checkpoint)
+  await del(approvalId)
+}
+
+export const reject = async (approvalId: string) => {
+  await del(approvalId)
+}
+```
+</CodeGroup>
+
+## Implementation Details
+
+<Steps>
+  <Step title="Generate Content">
+    The `generate` step creates the draft using AI and returns it in the context.
+  </Step>
+  
+  <Step title="Pause for Approval">
+    When `generate` completes, `onStepComplete` saves the checkpoint and calls `e.stopPipeline()` to halt execution.
+  </Step>
+  
+  <Step title="Store Checkpoint">
+    The checkpoint is stored in a key-value store (database, Redis, etc.) with a unique approval ID.
+  </Step>
+  
+  <Step title="Resume or Reject">
+    When approved, `runCheckpoint` resumes from the saved state. If rejected, the checkpoint is simply deleted.
+  </Step>
+</Steps>
+
+## Key Methods
+
+<AccordionGroup>
+  <Accordion title="onStepComplete">
+    Callback fired after each step completes. Receives an event object with:
+    - `stepName`: The name of the completed step
+    - `checkpoint`: Base64 checkpoint string
+    - `stopPipeline()`: Method to halt execution immediately
+    - `context`: Current context data
+  </Accordion>
+  
+  <Accordion title="runCheckpoint">
+    Resumes a pipeline from a checkpoint. Accepts:
+    - `checkpoint`: The checkpoint string to resume from
+    - `overrideData` (optional): Shallow merge additional data into the context
+  </Accordion>
+  
+  <Accordion title="stopPipeline">
+    Call this in `onStepComplete` to stop execution after the current step. The pipeline returns the current context without running remaining steps.
+  </Accordion>
+</AccordionGroup>
+
+## Real-World Use Cases
+
+<CardGroup cols={2}>
+  <Card title="Content Review" icon="file-check">
+    Generate blog posts or social media content, pause for editorial review, publish when approved
+  </Card>
+  
+  <Card title="Payment Approval" icon="credit-card">
+    Process orders up to a threshold automatically, require manager approval for large amounts
+  </Card>
+  
+  <Card title="Customer Support" icon="headset">
+    AI drafts responses, human agents review and approve before sending to customers
+  </Card>
+  
+  <Card title="Data Changes" icon="pen-to-square">
+    Stage database migrations or configuration changes, require approval before applying
+  </Card>
+</CardGroup>
+
+## Best Practices
+
+<Warning>
+Don't store sensitive data in checkpoints if you're using external storage. Consider encrypting checkpoints or using reference IDs for sensitive information.
+</Warning>
+
+<Tip>
+Set expiration times on stored checkpoints to automatically clean up abandoned approval requests.
+</Tip>
+
+### Checkpoint Storage
+
+Choose a storage backend based on your requirements:
+
+- **Redis**: Fast, in-memory, with TTL support
+- **Database**: Persistent, queryable, with audit trails
+- **S3/Object Storage**: For long-term retention or large contexts
+- **Job Queue**: Built-in checkpoint support in systems like BullMQ
+
+### Error Handling
+
+Always handle missing or invalid checkpoints:
+
+```typescript
+const checkpoint = await get(approvalId)
+if (!checkpoint) {
+  throw new Error('Approval request expired or not found')
+}
+```
+
+## Override Data
+
+When resuming, you can override context data. This is useful for:
+- Adding human review comments
+- Updating timestamps
+- Modifying generated content before continuing
+
+```typescript
+await pipeline.runCheckpoint({
+  checkpoint,
+  overrideData: {
+    reviewedBy: 'user@example.com',
+    reviewedAt: new Date().toISOString(),
+    approvalNotes: 'Looks good!',
+  },
+})
+```
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="AI Workflows" icon="sparkles" href="/examples/ai-workflows">
+    Combine approvals with AI generation workflows
+  </Card>
+  <Card title="Content Moderation" icon="shield-check" href="/examples/content-moderation">
+    Use branching logic before requesting approval
+  </Card>
+</CardGroup>

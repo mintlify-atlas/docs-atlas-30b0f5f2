@@ -1,0 +1,437 @@
+---
+title: 'RetryConfig & CircuitBreakerConfig'
+description: 'Retry and circuit breaker configuration for resilient pipelines'
+---
+
+## Overview
+
+Retry and circuit breaker configurations provide resilience patterns for handling transient failures and preventing cascading failures in your pipelines.
+
+## RetryConfig
+
+### Type Definition
+
+```typescript
+type RetryConfig = {
+  retries?: number
+  retryDelayMs?: number | ((attempt: number, error: Error) => number)
+  shouldRetry?: (error: Error) => boolean
+}
+```
+
+RetryConfig is included in [StepConfig](/api/step-config) to enable automatic retry logic for individual steps.
+
+### Configuration Fields
+
+<ParamField path="retries" type="number" optional default="0">
+  Number of retry attempts after the initial execution fails. Total execution attempts will be `retries + 1`.
+  
+  ```typescript
+  // Retry up to 3 times (4 total attempts)
+  pipeline.step(
+    { retries: 3 },
+    async (ctx) => {
+      const data = await unreliableApi()
+      return { data }
+    }
+  )
+  ```
+</ParamField>
+
+<ParamField path="retryDelayMs" type="number | ((attempt: number, error: Error) => number)" optional default="0">
+  Delay in milliseconds between retry attempts. Can be a static number or a function that computes delay based on attempt number and error.
+  
+  The `attempt` parameter starts at 1 for the first retry.
+  
+  **Static delay:**
+  ```typescript
+  pipeline.step(
+    {
+      retries: 3,
+      retryDelayMs: 1000 // Wait 1 second between retries
+    },
+    async (ctx) => {
+      return { data: await fetchData() }
+    }
+  )
+  ```
+  
+  **Dynamic delay (exponential backoff):**
+  ```typescript
+  pipeline.step(
+    {
+      retries: 5,
+      retryDelayMs: (attempt, error) => {
+        // Exponential backoff: 100ms, 200ms, 400ms, 800ms, 1600ms
+        return Math.min(100 * Math.pow(2, attempt - 1), 5000)
+      }
+    },
+    async (ctx) => {
+      return { data: await fetchData() }
+    }
+  )
+  ```
+  
+  **Error-based delay:**
+  ```typescript
+  pipeline.step(
+    {
+      retries: 3,
+      retryDelayMs: (attempt, error) => {
+        // Use Retry-After header if available
+        if (error.response?.headers['retry-after']) {
+          return parseInt(error.response.headers['retry-after']) * 1000
+        }
+        return 1000 * attempt
+      }
+    },
+    async (ctx) => {
+      return { data: await apiCall() }
+    }
+  )
+  ```
+</ParamField>
+
+<ParamField path="shouldRetry" type="(error: Error) => boolean" optional>
+  Function that determines whether a specific error should trigger a retry. Returns `true` to retry, `false` to fail immediately.
+  
+  By default, all errors trigger retries (if retries are configured). Use this to skip retries for non-transient errors.
+  
+  ```typescript
+  pipeline.step(
+    {
+      retries: 3,
+      shouldRetry: (error) => {
+        // Only retry on network errors or 5xx status codes
+        if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
+          return true
+        }
+        if (error.response?.status >= 500) {
+          return true
+        }
+        // Don't retry client errors (4xx)
+        return false
+      }
+    },
+    async (ctx) => {
+      return { data: await apiCall() }
+    }
+  )
+  ```
+  
+  ```typescript
+  // Don't retry validation errors
+  pipeline.step(
+    {
+      retries: 3,
+      shouldRetry: (error) => {
+        return error.name !== 'ValidationError'
+      }
+    },
+    async (ctx) => {
+      return { result: await validateAndProcess(ctx.input) }
+    }
+  )
+  ```
+</ParamField>
+
+### Complete Retry Example
+
+```typescript
+import { createPipeline } from 'stepkit'
+
+const pipeline = createPipeline({ url: 'https://api.example.com' })
+  .step(
+    {
+      name: 'fetchWithRetry',
+      retries: 5,
+      retryDelayMs: (attempt, error) => {
+        // Exponential backoff with jitter
+        const baseDelay = Math.min(1000 * Math.pow(2, attempt - 1), 10000)
+        const jitter = Math.random() * 1000
+        return baseDelay + jitter
+      },
+      shouldRetry: (error) => {
+        // Retry on network errors and 429/5xx responses
+        if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
+          return true
+        }
+        const status = error.response?.status
+        return status === 429 || (status >= 500 && status < 600)
+      },
+      onError: 'continue' // Continue pipeline even if all retries fail
+    },
+    async (ctx) => {
+      const response = await fetch(ctx.url)
+      if (!response.ok) {
+        const error = new Error(`HTTP ${response.status}`)
+        error.response = response
+        throw error
+      }
+      const data = await response.json()
+      return { data }
+    }
+  )
+
+const result = await pipeline.run()
+```
+
+## CircuitBreakerConfig
+
+### Type Definition
+
+```typescript
+type CircuitBreakerConfig = {
+  failureThreshold?: number
+  cooldownMs?: number
+  behaviorOnOpen?: 'throw' | 'skip'
+}
+```
+
+Circuit breaker pattern prevents cascading failures by temporarily blocking execution of a failing step. The circuit breaker has three states:
+
+1. **Closed** (normal): Step executes normally
+2. **Open** (tripped): Step execution is blocked after threshold failures
+3. **Half-open** (recovering): After cooldown, one execution is attempted to test recovery
+
+Circuit breakers are scoped per step within a pipeline instance.
+
+### Configuration Fields
+
+<ParamField path="failureThreshold" type="number" optional default="5">
+  Number of consecutive failures before the circuit breaker opens (trips).
+  
+  ```typescript
+  pipeline.step(
+    {
+      circuitBreaker: {
+        failureThreshold: 3 // Open after 3 consecutive failures
+      }
+    },
+    async (ctx) => {
+      return { data: await unreliableService() }
+    }
+  )
+  ```
+</ParamField>
+
+<ParamField path="cooldownMs" type="number" optional default="60000">
+  Time in milliseconds to wait before attempting to close the circuit breaker. After this cooldown period, the circuit enters half-open state and allows one execution attempt.
+  
+  Default is 60000ms (1 minute).
+  
+  ```typescript
+  pipeline.step(
+    {
+      circuitBreaker: {
+        failureThreshold: 5,
+        cooldownMs: 30000 // Wait 30 seconds before retry
+      }
+    },
+    async (ctx) => {
+      return { data: await unreliableService() }
+    }
+  )
+  ```
+</ParamField>
+
+<ParamField path="behaviorOnOpen" type="'throw' | 'skip'" optional default="throw">
+  Behavior when the circuit breaker is open.
+  
+  - `throw`: (default) Throw an error indicating the circuit is open
+  - `skip`: Skip step execution and continue pipeline
+  
+  ```typescript
+  // Throw error when circuit is open
+  pipeline.step(
+    {
+      circuitBreaker: {
+        failureThreshold: 3,
+        behaviorOnOpen: 'throw'
+      }
+    },
+    async (ctx) => {
+      return { critical: await criticalService() }
+    }
+  )
+  
+  // Skip step when circuit is open
+  pipeline.step(
+    {
+      circuitBreaker: {
+        failureThreshold: 3,
+        behaviorOnOpen: 'skip'
+      },
+      onError: 'continue'
+    },
+    async (ctx) => {
+      return { optional: await optionalService() }
+    }
+  )
+  ```
+</ParamField>
+
+### Circuit Breaker Lifecycle
+
+```typescript
+// Initial state: Closed (circuit allows execution)
+pipeline.step(
+  {
+    circuitBreaker: {
+      failureThreshold: 3,
+      cooldownMs: 30000
+    }
+  },
+  async (ctx) => {
+    return { data: await service() }
+  }
+)
+
+// After 3 consecutive failures:
+// State: Open (circuit blocks execution)
+// - If behaviorOnOpen: 'throw' → throws error
+// - If behaviorOnOpen: 'skip' → skips step
+
+// After 30 seconds (cooldownMs):
+// State: Half-open (circuit allows one test execution)
+// - If execution succeeds → returns to Closed state
+// - If execution fails → returns to Open state, cooldown restarts
+```
+
+### Combining Retries and Circuit Breaker
+
+```typescript
+import { createPipeline } from 'stepkit'
+
+const pipeline = createPipeline({ serviceUrl: 'https://api.example.com' })
+  .step(
+    {
+      name: 'resilientServiceCall',
+      // Retry configuration
+      retries: 3,
+      retryDelayMs: (attempt) => 1000 * attempt,
+      shouldRetry: (error) => error.response?.status >= 500,
+      // Circuit breaker configuration
+      circuitBreaker: {
+        failureThreshold: 5,
+        cooldownMs: 60000,
+        behaviorOnOpen: 'skip'
+      },
+      // Error handling
+      onError: 'continue'
+    },
+    async (ctx) => {
+      const response = await fetch(ctx.serviceUrl)
+      const data = await response.json()
+      return { serviceData: data }
+    }
+  )
+  .step(
+    { name: 'processData' },
+    async (ctx) => {
+      // serviceData may be undefined if circuit was open or all retries failed
+      if (ctx.serviceData) {
+        return { result: processData(ctx.serviceData) }
+      }
+      return { result: getDefaultResult() }
+    }
+  )
+
+const result = await pipeline.run()
+```
+
+### Circuit Breaker with Monitoring
+
+```typescript
+const pipeline = createPipeline({ endpoint: '/api/data' })
+  .step(
+    {
+      name: 'monitoredService',
+      circuitBreaker: {
+        failureThreshold: 3,
+        cooldownMs: 45000,
+        behaviorOnOpen: 'throw'
+      }
+    },
+    async (ctx) => {
+      return { data: await callService(ctx.endpoint) }
+    }
+  )
+
+await pipeline.run({
+  onError: (stepName, error) => {
+    // Detect circuit breaker errors
+    if (error.message.includes('circuit breaker is open')) {
+      console.error(`Circuit open for step: ${stepName}`)
+      // Alert monitoring system
+      alerting.send({
+        severity: 'warning',
+        message: `Circuit breaker opened for ${stepName}`,
+        timestamp: Date.now()
+      })
+    }
+  }
+})
+```
+
+## Best Practices
+
+### Retry Strategy
+
+1. **Use exponential backoff** with jitter to avoid thundering herd:
+   ```typescript
+   retryDelayMs: (attempt) => {
+     const baseDelay = Math.min(1000 * Math.pow(2, attempt - 1), 10000)
+     const jitter = Math.random() * 1000
+     return baseDelay + jitter
+   }
+   ```
+
+2. **Only retry transient errors**:
+   ```typescript
+   shouldRetry: (error) => {
+     // Don't retry validation, authentication, or authorization errors
+     if (error.name === 'ValidationError') return false
+     if (error.response?.status === 401 || error.response?.status === 403) return false
+     return true
+   }
+   ```
+
+3. **Limit retry attempts** to prevent excessive delays:
+   ```typescript
+   retries: 3 // Usually sufficient for transient failures
+   ```
+
+### Circuit Breaker Strategy
+
+1. **Set appropriate thresholds** based on traffic patterns:
+   ```typescript
+   failureThreshold: 5 // Higher for high-traffic services
+   ```
+
+2. **Use reasonable cooldown periods**:
+   ```typescript
+   cooldownMs: 60000 // 1 minute is often a good starting point
+   ```
+
+3. **Choose behavior based on criticality**:
+   ```typescript
+   // Critical steps: throw to fail fast
+   behaviorOnOpen: 'throw'
+   
+   // Optional steps: skip to continue gracefully
+   behaviorOnOpen: 'skip'
+   ```
+
+4. **Combine with error handling**:
+   ```typescript
+   {
+     circuitBreaker: { behaviorOnOpen: 'skip' },
+     onError: 'continue' // Allow pipeline to continue
+   }
+   ```
+
+## Related Types
+
+- [StepConfig](/api/step-config) - Includes RetryConfig and CircuitBreakerConfig
+- [PipelineConfig](/api/pipeline-config) - Pipeline-level configuration
